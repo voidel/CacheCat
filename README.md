@@ -8,7 +8,7 @@ Textures and searches stay on your device.
 ## Features
 
 - Browse cached textures and filter by UUID.
-- Search colours, shapes and materials with local SigLIP indexing.
+- Find objects, scenes, colours, shapes, patterns, materials and text within images using local SigLIP search.
 - Search while indexing continues, with progress and partial results shown.
 - Choose GPU+CPU, GPU or CPU indexing, depending on available acceleration.
 - Sort textures, copy UUIDs, and export PNG or TGA.

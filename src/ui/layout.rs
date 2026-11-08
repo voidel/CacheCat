@@ -386,6 +386,17 @@ impl Render for CacheCat {
                             .h(px(38.))
                             .child(Select::new(&self.theme_select)),
                     ),
+            )
+            .child(div().flex_1().min_h(px(16.)))
+            .child(
+                Button::new("github-project")
+                    .link()
+                    .label("GitHub")
+                    .icon(Icon::ExternalLink)
+                    .text_color(rgb(p.muted))
+                    .justify_start()
+                    .tooltip("Open CacheCat on GitHub")
+                    .on_click(|_, _, cx| cx.open_url("https://github.com/voidel/CacheCat")),
             );
 
         let mut main = div()
@@ -400,7 +411,7 @@ impl Render for CacheCat {
                 div()
                     .text_2xl()
                     .font_weight(FontWeight::SEMIBOLD)
-                    .child("Texture library"),
+                    .child("Browse cache"),
             )
             .child(
                 div()

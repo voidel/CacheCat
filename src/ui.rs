@@ -32,6 +32,8 @@ use theme::Palette;
 const TILE_MIN: f32 = 96.;
 const TILE_MAX: f32 = 256.;
 const TILE_DEFAULT: f32 = 192.;
+const SEMANTIC_SEARCH_HINT: &str =
+    "Search objects, scenes, colours, shapes, patterns, materials or text…";
 
 #[derive(Default, Clone, Copy, Serialize, Deserialize, PartialEq)]
 enum Appearance {
@@ -139,8 +141,7 @@ impl CacheCat {
         if settings.cache.is_none() {
             settings.cache = cachecat::cache::default_path();
         }
-        let search = cx
-            .new(|cx| InputState::new(window, cx).placeholder("Search textures, colours, shapes…"));
+        let search = cx.new(|cx| InputState::new(window, cx).placeholder(SEMANTIC_SEARCH_HINT));
         let mode_select = cx.new(|cx| {
             let mut state = SelectState::new(
                 vec![SharedString::from("Semantic"), SharedString::from("UUID")],
@@ -202,7 +203,7 @@ impl CacheCat {
                             if this.mode == SearchMode::Uuid {
                                 "Enter an asset UUID…"
                             } else {
-                                "Search textures, colours, shapes…"
+                                SEMANTIC_SEARCH_HINT
                             },
                             window,
                             cx,

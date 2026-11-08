@@ -1,7 +1,8 @@
 FROM rust:slim-bookworm AS check
 RUN apt-get update && apt-get install -y --no-install-recommends clang cmake pkg-config libasound2-dev libfontconfig1-dev libfreetype6-dev libxkbcommon-x11-dev libwayland-dev libx11-xcb-dev libx11-dev libxcb1-dev libxcomposite-dev libxrandr-dev libxi-dev libxcursor-dev libxinerama-dev libvulkan-dev libssl-dev && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
-COPY Cargo.toml Cargo.lock ./
+COPY Cargo.toml Cargo.lock build.rs ./
+COPY assets ./assets
 COPY src ./src
 COPY vendor ./vendor
 COPY tests/fixtures ./tests/fixtures

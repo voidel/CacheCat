@@ -18,6 +18,7 @@ pub enum Icon {
     ZoomOut,
     ZoomIn,
     Close,
+    ExternalLink,
 }
 
 impl Icon {
@@ -37,6 +38,7 @@ impl Icon {
             Self::ZoomOut => "zoom-out",
             Self::ZoomIn => "zoom-in",
             Self::Close => "close",
+            Self::ExternalLink => "external-link",
         }
     }
 
@@ -72,6 +74,9 @@ impl AssetSource for Assets {
             Some("chevron-down") => "<path d='m6 9 6 6 6-6'/>",
             Some("check") => "<path d='m4 12 5 5L20 6'/>",
             Some("close") => "<path d='m6 6 12 12M6 18 18 6'/>",
+            Some("external-link") => {
+                "<path d='M14 3h7v7m0-7L10 14M10 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-5'/>"
+            }
             Some("cat") => {
                 "<path d='m4 10-1-7 7 4h4l7-4-1 7c3 8-1 11-8 11S1 18 4 10Z'/><path d='M7 13h1m8 0h1m-7 4 2 1 2-1M1 14l4 1m14 0 4-1M2 19h3m14 0h3'/>"
             }

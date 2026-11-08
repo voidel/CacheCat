@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 32 32">
+  <title>CacheCat</title>
+  <rect width="32" height="32" rx="7" fill="#30241f"/>
+  <g transform="translate(4 4)" fill="none" stroke="#ff9865" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <path d="m4 10-1-7 7 4h4l7-4-1 7c3 8-1 11-8 11S1 18 4 10Z"/>
+    <path d="M7 13h1m8 0h1m-7 4 2 1 2-1M1 14l4 1m14 0 4-1M2 19h3m14 0h3"/>
+  </g>
+</svg>

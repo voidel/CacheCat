@@ -1,6 +1,9 @@
 **
 !Cargo.toml
 !Cargo.lock
+!build.rs
+!assets/
+!assets/**
 !src/
 !src/**
 !vendor/

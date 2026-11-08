@@ -30,8 +30,11 @@ if mac:
     contents = staging / "CacheCat.app" / "Contents"
     binary_dir = contents / "MacOS"
     binary_dir.mkdir(parents=True, exist_ok=True)
+    resources = contents / "Resources"
+    resources.mkdir()
+    shutil.copy2(root / "assets" / "cachecat.icns", resources / "cachecat.icns")
     with (contents / "Info.plist").open("wb") as file:
-        plistlib.dump({"CFBundleName": "CacheCat", "CFBundleDisplayName": "CacheCat", "CFBundleIdentifier": "zone.pom.cachecat", "CFBundleExecutable": "cachecat", "CFBundlePackageType": "APPL", "CFBundleShortVersionString": "0.1.0", "CFBundleVersion": "1", "LSMinimumSystemVersion": "12.0", "NSHighResolutionCapable": True}, file)
+        plistlib.dump({"CFBundleName": "CacheCat", "CFBundleDisplayName": "CacheCat", "CFBundleIdentifier": "zone.pom.cachecat", "CFBundleExecutable": "cachecat", "CFBundleIconFile": "cachecat.icns", "CFBundlePackageType": "APPL", "CFBundleShortVersionString": "0.1.0", "CFBundleVersion": "1", "LSMinimumSystemVersion": "12.0", "NSHighResolutionCapable": True}, file)
 else:
     binary_dir = staging
 exe = "cachecat.exe" if windows else "cachecat"
