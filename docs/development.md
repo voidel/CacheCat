@@ -41,3 +41,6 @@ cargo run -- --cache tests/fixtures/texturecache --data-dir .local/data --inspec
 GitHub Actions tests and builds Windows x64, macOS Apple silicon/Intel and Linux x64. Push a `v*` tag to assemble platform archives and SHA-256
 checksums into a **draft** GitHub release. Review artifacts before publishing.
 No model files or user caches are included. No production deployment is performed by CI.
+
+Archives contain the application, required runtime libraries, platform launchers
+and licence notices. The README and developer documentation remain in this repository.

@@ -39,11 +39,9 @@ shutil.copy2(source / exe, binary_dir / exe)
 for pattern in ("*.dll", "*.dylib", "*.so*"):
     for library in source.glob(pattern):
         if library.is_file(): shutil.copy2(library.resolve(), binary_dir / library.name)
-for name in ("LICENSE", "THIRD_PARTY.md", "README.md"):
+# Keep licence notices in every archive; user/developer documentation stays online.
+for name in ("LICENSE", "THIRD_PARTY.md"):
     shutil.copy2(root / name, staging / name)
-(staging / "docs").mkdir()
-for name in ("development.md", "architecture.md"):
-    shutil.copy2(root / "docs" / name, staging / "docs" / name)
 if mac:
     subprocess.run(["codesign", "--force", "--deep", "--sign", "-", str(staging / "CacheCat.app")], check=True)
 if not windows:

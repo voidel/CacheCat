@@ -7,7 +7,8 @@ CacheCat is a local-first Second Life / Firestorm texture-cache explorer.
 
 Choose the matching platform archive, extract it, and run CacheCat. macOS archives
 contain an app bundle (ad-hoc signed, not Apple notarized). Linux requires X11 or
-Wayland and the system graphics/font libraries listed in docs/development.md. Windows needs
+Wayland and the system graphics/font libraries listed in the
+[development guide](https://github.com/voidel/CacheCat/blob/main/docs/development.md#desktop). Windows needs
 a current supported Windows installation with the Visual C++ runtime.
 
 This is a portable application. Its `data` folder lives beside the executable
