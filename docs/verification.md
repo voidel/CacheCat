@@ -1,5 +1,19 @@
 # Verification record
 
+## In-memory viewport previews — 2026-11-08
+
+Thumbnail PNG generation and persistence were removed. Only the visible grid and
+selected details item request previews; scrolling replaces queued work and evicts
+off-screen CPU/GPU images. A separate decoder keeps preview loading independent of
+embedding work and pause state. Saved embeddings are reused without image decoding.
+Old thumbnail folders are ignored and excluded from legacy storage imports.
+
+All 19 tests passed on Windows and in the isolated Linux container, including
+viewport queue replacement, requested-only decoding, saved embedding reuse without
+thumbnail files, and preserving legacy files while skipping thumbnail import.
+Formatting, strict Windows Clippy and the optimized portable build passed.
+Native scrolling and final visual appearance were not tested on the active desktop.
+
 ## pom.zone colours — 2026-11-08
 
 Light mode uses pom.zone's white surfaces, warm neutral text and coral accents.

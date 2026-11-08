@@ -6,17 +6,26 @@ Default persistent storage is `data/` beside the executable (beside the `.app`
 bundle on macOS). `--data-dir` remains an explicit override. The first default
 launch without a portable database imports the former platform user-data location
 on the background worker. The UI initially reads the former settings if needed.
-Imports copy only models, thumbnails, settings and a consistent SQLite backup,
+Imports copy only models, settings and a consistent SQLite backup,
 including WAL contents. Files are installed atomically without overwriting existing
 portable files; the database is published last so interrupted imports can resume.
 The source is retained. Release packaging always uses a fresh staging directory
 to prevent accidental inclusion of portable data from previous local runs.
 
-The GPUI thread renders a virtualized grid and handles input. A single background
-worker reads the cache, hashes content, generates thumbnails and maintains a SQLite
-embedding index. It processes a small preview batch first, then interleaves previews
-with embeddings. Commands are handled between items. Search uses all currently
-available embeddings and refreshes as new embeddings arrive.
+The GPUI thread renders a virtualized grid and handles input. A background indexer
+reads headers, hashes content and maintains the SQLite embedding index. Entries
+with saved embeddings need no image decode; missing embeddings are prepared and
+indexed incrementally. Search uses all currently available embeddings and refreshes
+as new embeddings arrive.
+
+A separate preview worker decodes only the current grid viewport and the selected
+detail item, even while indexing is paused or loading the model. New viewport
+requests replace queued work; obsolete generations/results are discarded. One
+image is decoded at a time, with at most two completed 256px previews waiting for
+the UI. The UI retains only visible previews and the selected detail preview;
+eviction explicitly releases GPUI image resources as well as CPU memory. No
+thumbnail files are read or written. Older thumbnail folders are ignored and are
+not imported into portable storage. Rescanning invalidates in-memory previews.
 
 Search mode is explicit: Semantic is the default; UUID filtering never requests
 the model. A semantic query without a ready model opens a download dialog showing
@@ -25,9 +34,9 @@ the cache worker, and cancellation aborts pending network reads and removes part
 files. Verified complete files are reused on retry. The dialog closes when the
 model loads successfully, and indexing and the pending query continue automatically.
 
-After eight initial previews, native indexing alternates preparation and inference.
-Up to 16 prepared 224×224 tensors (about 9.2 MiB) reuse the preview decode; full-size
-textures are not retained. Content hashes are rechecked before using prepared data.
+After eight initial metadata records, native indexing alternates preparation and
+inference. Up to 16 prepared 224×224 tensors (about 9.2 MiB) can wait for inference;
+full-size textures are not retained. Content hashes are rechecked before using prepared data.
 Identical content queued under multiple UUIDs reuses the first saved embedding.
 Search computes each similarity once and selects the best 200 before sorting.
 
@@ -62,7 +71,7 @@ contains address size and encoder information; version 1.7's header is 8 bytes.
 Allocated trailing records are ignored. Nil/deleted/invalid records are skipped,
 and duplicate UUIDs retain the newest live record.
 
-Content hashes invalidate thumbnails/embeddings when bytes change; an independent
+Content hashes invalidate embeddings when bytes change; an independent
 model key invalidates embeddings when preprocessing or weights change. A changed
 texture between preview and indexing is reported for rescan. Model downloads use
 a fixed repository revision, exact file sizes and SHA-256 verification before rename.

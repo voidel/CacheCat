@@ -184,7 +184,6 @@ mod tests {
                 body_size: 0,
             },
             dimensions,
-            thumbnail: None,
             error: None,
             indexed: false,
         })

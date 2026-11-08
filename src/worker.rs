@@ -18,7 +18,6 @@ use std::{
 #[derive(Clone, Debug)]
 pub struct Item {
     pub texture: Texture,
-    pub thumbnail: Option<PathBuf>,
     pub dimensions: Option<(u32, u32)>,
     pub error: Option<String>,
     pub indexed: bool,
@@ -92,7 +91,7 @@ struct State {
     items: Vec<Item>,
     hashes: Vec<Option<String>>,
     vectors: Vec<Option<Vec<f32>>>,
-    decode: VecDeque<usize>,
+    scan: VecDeque<usize>,
     embed: VecDeque<usize>,
     prepared: HashMap<usize, Vec<f32>>,
     query: String,
@@ -129,7 +128,7 @@ impl State {
     }
 }
 fn run(data: PathBuf, cpu: bool, rx: Receiver<Command>, tx: &Sender<Event>) -> Result<()> {
-    std::fs::create_dir_all(data.join("thumbnails"))?;
+    std::fs::create_dir_all(&data)?;
     let index = Index::open(&data.join("index.sqlite3"))?;
     let model_dir = data.join("models").join(model::MODEL_ID);
     let mut model: Option<Model> = None;
@@ -139,7 +138,7 @@ fn run(data: PathBuf, cpu: bool, rx: Receiver<Command>, tx: &Sender<Event>) -> R
         items: vec![],
         hashes: vec![],
         vectors: vec![],
-        decode: VecDeque::new(),
+        scan: VecDeque::new(),
         embed: VecDeque::new(),
         prepared: HashMap::new(),
         query: String::new(),
@@ -176,8 +175,8 @@ fn run(data: PathBuf, cpu: bool, rx: Receiver<Command>, tx: &Sender<Event>) -> R
             }
             download = None;
         }
-        let pending = !state.paused
-            && (!state.decode.is_empty() || model.is_some() && !state.embed.is_empty());
+        let pending =
+            !state.paused && (!state.scan.is_empty() || model.is_some() && !state.embed.is_empty());
         let command = match rx.recv_timeout(if pending || load_model {
             Duration::ZERO
         } else {
@@ -199,7 +198,7 @@ fn run(data: PathBuf, cpu: bool, rx: Receiver<Command>, tx: &Sender<Event>) -> R
                     // Drop previous work even when the new folder cannot be read.
                     state.cache = None;
                     state.items.clear();
-                    state.decode.clear();
+                    state.scan.clear();
                     state.embed.clear();
                     state.prepared.clear();
                     state.hashes.clear();
@@ -211,14 +210,13 @@ fn run(data: PathBuf, cpu: bool, rx: Receiver<Command>, tx: &Sender<Event>) -> R
                                 .iter()
                                 .map(|t| Item {
                                     texture: t.clone(),
-                                    thumbnail: None,
                                     dimensions: None,
                                     error: None,
                                     indexed: false,
                                 })
                                 .collect();
                             let n = state.items.len();
-                            state.decode = (0..n).collect();
+                            state.scan = (0..n).collect();
                             state.hashes = vec![None; n];
                             state.vectors = vec![None; n];
                             let _ = tx.send(Event::Loaded(generation, state.items.clone()));
@@ -270,14 +268,14 @@ fn run(data: PathBuf, cpu: bool, rx: Receiver<Command>, tx: &Sender<Event>) -> R
             }
             continue;
         }
-        // Show an initial preview batch, then keep a bounded preparation queue.
-        // This reuses decoded pixels without retaining full-resolution textures.
-        let decoded = state.items.len() - state.decode.len();
-        let preview_turn = decoded < 8
+        // Scan headers and saved embeddings without decoding off-screen previews.
+        // Full image decoding happens only when an embedding is actually missing.
+        let scanned = state.items.len() - state.scan.len();
+        let scan_turn = scanned < 8
             || !load_model && (model.is_none() || since_embedding < 1 || state.embed.is_empty());
         if !state.paused
-            && preview_turn
-            && let Some(i) = state.decode.pop_front()
+            && scan_turn
+            && let Some(i) = state.scan.pop_front()
         {
             since_embedding += 1;
             let result = (|| -> Result<()> {
@@ -288,20 +286,15 @@ fn run(data: PathBuf, cpu: bool, rx: Receiver<Command>, tx: &Sender<Event>) -> R
                     .read(&state.items[i].texture)?;
                 let hash = cache::fingerprint(&bytes);
                 state.items[i].dimensions = Some(cache::dimensions(&bytes)?);
-                let thumb = data.join("thumbnails").join(format!("{hash}.png"));
                 state.vectors[i] = index.get(&hash)?;
-                if !thumb.is_file() {
+                if state.vectors[i].is_none()
+                    && (load_model || model.is_some())
+                    && state.prepared.len() < 16
+                {
                     let image = cache::decode(&bytes)?;
                     state.items[i].dimensions = Some((image.width(), image.height()));
-                    image.thumbnail(256, 256).save(&thumb)?;
-                    if state.vectors[i].is_none()
-                        && (load_model || model.is_some())
-                        && state.prepared.len() < 16
-                    {
-                        state.prepared.insert(i, model::preprocess(&image));
-                    }
+                    state.prepared.insert(i, model::preprocess(&image));
                 }
-                state.items[i].thumbnail = Some(thumb);
                 state.items[i].indexed = state.vectors[i].is_some();
                 state.hashes[i] = Some(hash);
                 if state.vectors[i].is_none() {
@@ -313,9 +306,9 @@ fn run(data: PathBuf, cpu: bool, rx: Receiver<Command>, tx: &Sender<Event>) -> R
                 state.items[i].error = Some(format!("{e:#}"));
             }
             let _ = tx.send(Event::Item(state.generation, i, state.items[i].clone()));
-            if state.decode.len().is_multiple_of(16) {
+            if state.scan.len().is_multiple_of(16) {
                 state.results(tx);
-                let _ = tx.send(Event::Status("Loading previews…".into()));
+                let _ = tx.send(Event::Status("Reading cache metadata…".into()));
             }
             continue;
         }
@@ -370,7 +363,7 @@ fn run(data: PathBuf, cpu: bool, rx: Receiver<Command>, tx: &Sender<Event>) -> R
                     Some(&cache::fingerprint(&bytes)) == state.hashes[i].as_ref(),
                     "Texture changed; rescan to index its latest version"
                 );
-                // Duplicate content may have been indexed since this preview was queued.
+                // Duplicate content may have been indexed since this item was queued.
                 let hash = state.hashes[i].as_ref().unwrap();
                 let prepared = state.prepared.remove(&i);
                 let vector = if let Some(existing) = index.get(hash)? {
@@ -408,6 +401,42 @@ fn run(data: PathBuf, cpu: bool, rx: Receiver<Command>, tx: &Sender<Event>) -> R
 mod tests {
     use super::*;
     #[test]
+    fn catalogue_scan_reuses_embeddings_without_writing_thumbnails() {
+        let data = tempfile::tempdir().unwrap();
+        let cache = Cache::open(std::path::Path::new("tests/fixtures/texturecache")).unwrap();
+        let index = Index::open(&data.path().join("index.sqlite3")).unwrap();
+        let vector = model::normalize(vec![1.; 768]).unwrap();
+        for texture in &cache.textures {
+            index
+                .put(&cache::fingerprint(&cache.read(texture).unwrap()), &vector)
+                .unwrap();
+        }
+        let worker = Worker::start(data.path().to_owned(), true, None);
+        worker.commands.send(Command::Open(1, cache.root)).unwrap();
+        let mut indexed = std::collections::HashSet::new();
+        while indexed.len() < 4 {
+            match worker.events.recv_timeout(Duration::from_secs(5)).unwrap() {
+                Event::Item(1, i, item) => {
+                    assert!(item.indexed);
+                    assert!(item.dimensions.is_some());
+                    assert!(item.error.is_none());
+                    indexed.insert(i);
+                }
+                Event::Error(error) => panic!("{error}"),
+                _ => {}
+            }
+        }
+        assert!(!data.path().join("thumbnails").exists());
+        assert!(std::fs::read_dir(data.path()).unwrap().all(|entry| {
+            entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with("index.sqlite3")
+        }));
+    }
+
+    #[test]
     fn search_mode_is_explicit_and_results_include_it() {
         let cache = Cache::open(std::path::Path::new("tests/fixtures/texturecache")).unwrap();
         let items = cache
@@ -415,7 +444,6 @@ mod tests {
             .into_iter()
             .map(|texture| Item {
                 texture,
-                thumbnail: None,
                 dimensions: None,
                 error: None,
                 indexed: false,

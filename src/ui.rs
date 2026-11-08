@@ -22,6 +22,7 @@ use std::{
 
 mod download;
 mod icons;
+mod previews;
 mod theme;
 use icons::Icon;
 use theme::Palette;
@@ -64,6 +65,8 @@ impl Default for Settings {
 }
 struct CacheCat {
     worker: Worker,
+    previews: previews::MemoryPreviews,
+    preview_range: std::ops::Range<usize>,
     data: PathBuf,
     settings: Settings,
     search: Entity<InputState>,
@@ -225,6 +228,8 @@ impl CacheCat {
         ];
         let mut this = Self {
             worker: Worker::start(data.clone(), cpu, legacy),
+            previews: previews::MemoryPreviews::new(),
+            preview_range: 0..0,
             data,
             settings,
             search,
@@ -311,6 +316,7 @@ impl CacheCat {
     fn open(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         self.generation += 1;
         self.items.clear();
+        self.preview_range = 0..0;
         self.visible.clear();
         self.matches.clear();
         self.selected = None;
@@ -435,6 +441,24 @@ impl CacheCat {
         if sort_changed {
             self.visible = self.settings.sort.sort(&self.items, &self.matches);
         }
+        let start = (self.preview_range.start * self.columns).min(self.visible.len());
+        let end = (self.preview_range.end * self.columns).min(self.visible.len());
+        let mut wanted = self.visible[start..end].to_vec();
+        if let Some(selected) = self.selected {
+            wanted.retain(|&i| i != selected);
+            wanted.insert(0, selected);
+        }
+        let preview_items = wanted
+            .into_iter()
+            .filter_map(|i| self.items.get(i).map(|item| (i, item.texture.clone())))
+            .collect();
+        changed |= self.previews.update(
+            self.generation,
+            self.settings.cache.clone(),
+            preview_items,
+            window,
+            cx,
+        );
         if changed {
             if self.download_dialog {
                 window.refresh();
@@ -489,12 +513,9 @@ impl CacheCat {
         })
         .detach();
     }
-    fn card(&self, i: usize, p: Palette, cx: &mut Context<Self>) -> AnyElement {
-        let item = &self.items[i];
-        let id = item.texture.id.to_string();
-        let selected = self.selected == Some(i);
-        let preview = if let Some(path) = &item.thumbnail {
-            img(path.clone())
+    fn preview_element(&self, i: usize, p: Palette) -> AnyElement {
+        if let Some(Ok(image)) = self.previews.get(i) {
+            img(image.clone())
                 .size_full()
                 .object_fit(ObjectFit::Contain)
                 .into_any_element()
@@ -506,13 +527,20 @@ impl CacheCat {
                 .justify_center()
                 .text_color(rgb(p.muted))
                 .text_sm()
-                .child(if item.error.is_some() {
-                    "Preview unavailable"
-                } else {
-                    "Loading…"
-                })
+                .child(
+                    if self.previews.get(i).is_some_and(|image| image.is_err()) {
+                        "Preview unavailable"
+                    } else {
+                        "Loading…"
+                    },
+                )
                 .into_any_element()
-        };
+        }
+    }
+    fn card(&self, i: usize, p: Palette, cx: &mut Context<Self>) -> AnyElement {
+        let item = &self.items[i];
+        let id = item.texture.id.to_string();
+        let selected = self.selected == Some(i);
         div()
             .id(i)
             .flex_1()
@@ -539,7 +567,7 @@ impl CacheCat {
                     .w_full()
                     .p_2()
                     .bg(rgb(p.card))
-                    .child(preview),
+                    .child(self.preview_element(i, p)),
             )
             .child(
                 div()

@@ -77,9 +77,7 @@ impl CacheCat {
                     .flex_shrink_0()
                     .bg(rgb(p.card))
                     .rounded_lg()
-                    .when_some(item.thumbnail.clone(), |s, path| {
-                        s.child(img(path).size_full().object_fit(ObjectFit::Contain))
-                    }),
+                    .child(self.preview_element(self.selected.unwrap(), p)),
             )
             .child(div().text_xs().text_color(rgb(p.muted)).child("ASSET UUID"))
             .child(
@@ -118,7 +116,7 @@ impl CacheCat {
                                 format!("Download {}", format.label())
                             })
                             .icon(Icon::Download)
-                            .disabled(self.exporting || item.thumbnail.is_none())
+                            .disabled(self.exporting)
                             .flex_1()
                             .rounded_r_none()
                             .on_click(cx.listener(|this, _, _, cx| this.export_selected(cx))),
@@ -208,7 +206,6 @@ impl Render for CacheCat {
             .floor() as usize)
             .max(1);
         let indexed = self.items.iter().filter(|i| i.indexed).count();
-        let previews = self.items.iter().filter(|i| i.thumbnail.is_some()).count();
         let unavailable = self
             .items
             .iter()
@@ -375,6 +372,7 @@ impl Render for CacheCat {
                 .child("Indexing is not complete yet — results may be partial. New matches appear as textures are indexed."));
         }
         if self.visible.is_empty() {
+            self.preview_range = 0..0;
             let message = if self.items.is_empty() {
                 "Open a texture cache"
             } else if semantic && !self.model_ready {
@@ -400,6 +398,9 @@ impl Render for CacheCat {
                     "texture-grid",
                     self.visible.len().div_ceil(self.columns),
                     cx.processor(move |this, range: std::ops::Range<usize>, _, cx| {
+                        // Use the final virtual-list viewport on the next poll, not
+                        // its temporary single-row measurement pass.
+                        this.preview_range = range.clone();
                         range
                             .map(|row| {
                                 let start = row * this.columns;
@@ -440,8 +441,7 @@ impl Render for CacheCat {
             .text_color(rgb(p.muted))
             .child(format!("{indexed} / {} indexed", self.items.len()))
             .child(format!("{pending} pending"))
-            .child(format!("{unavailable} unavailable"))
-            .child(format!("{previews} previews"));
+            .child(format!("{unavailable} unavailable"));
         if !self.query.trim().is_empty() {
             counts = counts.child(format!("{} matches", self.visible.len()));
         }

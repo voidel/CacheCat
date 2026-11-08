@@ -21,9 +21,11 @@ Textures and searches stay on your device.
 
 CacheCat reads your cache without changing it. Incomplete cache entries may be unavailable.
 
-The desktop app is portable: its index, models, thumbnails and settings live in `data/`
+The desktop app is portable: its index, models and settings live in `data/`
 beside the executable (beside `CacheCat.app` on macOS). Keep this folder when moving or
 updating the app.
+
+Thumbnails are decoded on demand for visible items and kept only in memory.
 
 ## Responsible use
 

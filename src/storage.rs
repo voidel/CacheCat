@@ -93,8 +93,6 @@ pub fn import_legacy(
     )?;
     progress("Importing existing models into portable storage…".into());
     copy_tree(&source.join("models"), &destination.join("models"))?;
-    progress("Importing existing thumbnails into portable storage…".into());
-    copy_tree(&source.join("thumbnails"), &destination.join("thumbnails"))?;
     if source.join("settings.json").is_file() {
         copy_new(
             &source.join("settings.json"),
@@ -170,8 +168,9 @@ mod tests {
             fs::read(destination.join("models/model.onnx")).unwrap(),
             b"model"
         );
+        assert!(!destination.join("thumbnails").exists());
         assert_eq!(
-            fs::read(destination.join("thumbnails/thumb.png")).unwrap(),
+            fs::read(source.join("thumbnails/thumb.png")).unwrap(),
             b"thumb"
         );
         db.execute_batch("INSERT INTO sample VALUES('later');")
