@@ -1,7 +1,8 @@
 use crate::{
     cache::{self, Cache, Texture},
     index::{self, Index},
-    model::{self, Model},
+    indexing::{Indexers, IndexingMode},
+    model,
 };
 use anyhow::Result;
 use std::{
@@ -41,6 +42,7 @@ pub enum Command {
     Search(u64, String, SearchMode),
     Download(Arc<AtomicBool>),
     Pause(bool),
+    IndexingMode(IndexingMode),
 }
 pub enum Event {
     Loaded(u64, Vec<Item>),
@@ -48,6 +50,7 @@ pub enum Event {
     Results(u64, String, SearchMode, Vec<usize>),
     Status(String),
     Backend(String),
+    IndexingMode(IndexingMode, bool),
     Error(String),
     ModelReady(bool),
     DownloadProgress(u64, u64),
@@ -59,7 +62,7 @@ pub struct Worker {
     pub events: Receiver<Event>,
 }
 impl Worker {
-    pub fn start(data: PathBuf, cpu: bool, legacy: Option<PathBuf>) -> Self {
+    pub fn start(data: PathBuf, cpu: bool, mode: IndexingMode, legacy: Option<PathBuf>) -> Self {
         let (tx, rx) = mpsc::channel();
         let (events_tx, events_rx) = mpsc::channel();
         std::thread::Builder::new()
@@ -71,7 +74,7 @@ impl Worker {
                             let _ = events_tx.send(Event::Status(message));
                         })?;
                     }
-                    run(data, cpu, rx, &events_tx)
+                    run(data, cpu, mode, rx, &events_tx)
                 })();
                 if let Err(e) = result {
                     let _ = events_tx.send(Event::Error(format!("{e:#}")));
@@ -127,11 +130,20 @@ impl State {
         ));
     }
 }
-fn run(data: PathBuf, cpu: bool, rx: Receiver<Command>, tx: &Sender<Event>) -> Result<()> {
+fn run(
+    data: PathBuf,
+    cpu: bool,
+    requested_mode: IndexingMode,
+    rx: Receiver<Command>,
+    tx: &Sender<Event>,
+) -> Result<()> {
     std::fs::create_dir_all(&data)?;
     let index = Index::open(&data.join("index.sqlite3"))?;
     let model_dir = data.join("models").join(model::MODEL_ID);
-    let mut model: Option<Model> = None;
+    let mut gpu_available = !cpu && model::gpu_available();
+    let mut indexing_mode = requested_mode.supported(gpu_available);
+    let _ = tx.send(Event::IndexingMode(indexing_mode, gpu_available));
+    let mut model: Option<Indexers> = None;
     let mut state = State {
         generation: 0,
         cache: None,
@@ -229,6 +241,14 @@ fn run(data: PathBuf, cpu: bool, rx: Receiver<Command>, tx: &Sender<Event>) -> R
                     }
                 }
                 Command::Pause(paused) => state.paused = paused,
+                Command::IndexingMode(mode) => {
+                    indexing_mode = mode.supported(gpu_available);
+                    if let Some(model) = &mut model {
+                        model.select(indexing_mode);
+                        let _ = tx.send(Event::Backend(model.backend()));
+                    }
+                    let _ = tx.send(Event::IndexingMode(indexing_mode, gpu_available));
+                }
                 Command::Search(generation, query, mode) => {
                     if generation != state.generation {
                         continue;
@@ -266,13 +286,19 @@ fn run(data: PathBuf, cpu: bool, rx: Receiver<Command>, tx: &Sender<Event>) -> R
                     }
                 }
             }
+            if let Some(model) = &model {
+                refresh_devices(model, &mut indexing_mode, &mut gpu_available, tx);
+            }
             continue;
         }
         // Scan headers and saved embeddings without decoding off-screen previews.
         // Full image decoding happens only when an embedding is actually missing.
         let scanned = state.items.len() - state.scan.len();
         let scan_turn = scanned < 8
-            || !load_model && (model.is_none() || since_embedding < 1 || state.embed.is_empty());
+            || !load_model
+                && (model.is_none()
+                    || since_embedding < model.as_ref().map_or(1, Indexers::batch_size)
+                    || state.embed.is_empty());
         if !state.paused
             && scan_turn
             && let Some(i) = state.scan.pop_front()
@@ -323,7 +349,7 @@ fn run(data: PathBuf, cpu: bool, rx: Receiver<Command>, tx: &Sender<Event>) -> R
                 continue;
             }
             let _ = tx.send(Event::Status("Loading SigLIP…".into()));
-            match Model::load(&model_dir, cpu) {
+            match Indexers::load(&model_dir, indexing_mode, gpu_available) {
                 Ok(mut m) => {
                     if load_cancel
                         .take()
@@ -336,7 +362,10 @@ fn run(data: PathBuf, cpu: bool, rx: Receiver<Command>, tx: &Sender<Event>) -> R
                         state.query_vector = m.text(&state.query).ok();
                     }
                     let _ = tx.send(Event::Status("Indexing textures…".into()));
-                    let _ = tx.send(Event::Backend(m.backend.clone()));
+                    gpu_available = m.gpu_available();
+                    indexing_mode = m.mode;
+                    let _ = tx.send(Event::IndexingMode(indexing_mode, gpu_available));
+                    let _ = tx.send(Event::Backend(m.backend()));
                     model = Some(m);
                     let _ = tx.send(Event::ModelReady(true));
                     state.results(tx);
@@ -349,57 +378,118 @@ fn run(data: PathBuf, cpu: bool, rx: Receiver<Command>, tx: &Sender<Event>) -> R
         }
         if !state.paused
             && let Some(model) = model.as_mut()
-            && let Some(i) = state.embed.pop_front()
+            && !state.embed.is_empty()
         {
             since_embedding = 0;
-            let result = (|| -> Result<()> {
-                let bytes = state
-                    .cache
-                    .as_ref()
-                    .unwrap()
-                    .read(&state.items[i].texture)?;
-                // Viewer may update this entry while CacheCat is open.
-                anyhow::ensure!(
-                    Some(&cache::fingerprint(&bytes)) == state.hashes[i].as_ref(),
-                    "Texture changed; rescan to index its latest version"
-                );
-                // Duplicate content may have been indexed since this item was queued.
-                let hash = state.hashes[i].as_ref().unwrap();
+            let batch: Vec<_> = (0..model.batch_size())
+                .filter_map(|_| state.embed.pop_front())
+                .collect();
+            let mut ready = Vec::new();
+            let mut jobs = Vec::new();
+            let mut inputs = Vec::new();
+            for i in batch {
                 let prepared = state.prepared.remove(&i);
-                let vector = if let Some(existing) = index.get(hash)? {
-                    existing
-                } else {
-                    let pixels = match prepared {
-                        Some(pixels) => pixels,
-                        None => model::preprocess(&cache::decode(&bytes)?),
-                    };
-                    let vector = model.image_prepared(pixels)?;
-                    index.put(hash, &vector)?;
-                    vector
-                };
-                state.vectors[i] = Some(vector);
-                state.items[i].indexed = true;
-                Ok(())
-            })();
-            if let Err(e) = result {
-                state.prepared.remove(&i);
-                state.items[i].error = Some(format!("Indexing: {e:#}"));
+                let result = (|| -> Result<(bool, Vec<f32>)> {
+                    let bytes = state
+                        .cache
+                        .as_ref()
+                        .unwrap()
+                        .read(&state.items[i].texture)?;
+                    // Viewer may update this entry while CacheCat is open.
+                    anyhow::ensure!(
+                        Some(&cache::fingerprint(&bytes)) == state.hashes[i].as_ref(),
+                        "Texture changed; rescan to index its latest version"
+                    );
+                    // Duplicate content may have been indexed since this item was queued.
+                    let hash = state.hashes[i].as_ref().unwrap();
+                    if let Some(existing) = index.get(hash)? {
+                        Ok((true, existing))
+                    } else {
+                        let pixels = match prepared {
+                            Some(pixels) => pixels,
+                            None => model::preprocess(&cache::decode(&bytes)?),
+                        };
+                        Ok((false, pixels))
+                    }
+                })();
+                match result {
+                    Ok((true, vector)) => ready.push((i, Ok(vector))),
+                    Ok((false, pixels)) => {
+                        jobs.push(i);
+                        inputs.push(pixels);
+                    }
+                    Err(error) => ready.push((i, Err(error))),
+                }
             }
-            let _ = tx.send(Event::Item(state.generation, i, state.items[i].clone()));
+            for (i, result) in jobs.into_iter().zip(model.images(inputs)) {
+                ready.push((
+                    i,
+                    result.and_then(|vector| {
+                        index.put(state.hashes[i].as_ref().unwrap(), &vector)?;
+                        Ok(vector)
+                    }),
+                ));
+            }
+            for (i, result) in ready {
+                match result {
+                    Ok(vector) => {
+                        state.vectors[i] = Some(vector);
+                        state.items[i].indexed = true;
+                        state.items[i].error = None;
+                    }
+                    Err(error) => state.items[i].error = Some(format!("Indexing: {error:#}")),
+                }
+                let _ = tx.send(Event::Item(state.generation, i, state.items[i].clone()));
+            }
+            refresh_devices(model, &mut indexing_mode, &mut gpu_available, tx);
             if !state.query.is_empty() {
                 state.results(tx);
             }
             if state.embed.len().is_multiple_of(8) {
                 state.results(tx);
-                let _ = tx.send(Event::Backend(model.backend.clone()));
+                let _ = tx.send(Event::Backend(model.backend()));
             }
         }
+    }
+}
+
+fn refresh_devices(model: &Indexers, mode: &mut IndexingMode, gpu: &mut bool, tx: &Sender<Event>) {
+    if *mode != model.mode || *gpu != model.gpu_available() {
+        *mode = model.mode;
+        *gpu = model.gpu_available();
+        let _ = tx.send(Event::IndexingMode(*mode, *gpu));
+        let _ = tx.send(Event::Backend(model.backend()));
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn cpu_only_worker_rejects_unavailable_device_selection() {
+        let data = tempfile::tempdir().unwrap();
+        let worker = Worker::start(data.path().to_owned(), true, IndexingMode::GpuCpu, None);
+        assert!(matches!(
+            worker.events.recv_timeout(Duration::from_secs(5)).unwrap(),
+            Event::IndexingMode(IndexingMode::Cpu, false)
+        ));
+        for requested in IndexingMode::ALL {
+            worker
+                .commands
+                .send(Command::IndexingMode(requested))
+                .unwrap();
+            loop {
+                if let Event::IndexingMode(mode, available) =
+                    worker.events.recv_timeout(Duration::from_secs(5)).unwrap()
+                {
+                    assert_eq!(mode, IndexingMode::Cpu);
+                    assert!(!available);
+                    break;
+                }
+            }
+        }
+    }
+
     #[test]
     fn catalogue_scan_reuses_embeddings_without_writing_thumbnails() {
         let data = tempfile::tempdir().unwrap();
@@ -411,7 +501,7 @@ mod tests {
                 .put(&cache::fingerprint(&cache.read(texture).unwrap()), &vector)
                 .unwrap();
         }
-        let worker = Worker::start(data.path().to_owned(), true, None);
+        let worker = Worker::start(data.path().to_owned(), true, IndexingMode::Cpu, None);
         worker.commands.send(Command::Open(1, cache.root)).unwrap();
         let mut indexed = std::collections::HashSet::new();
         while indexed.len() < 4 {

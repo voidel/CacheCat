@@ -1,9 +1,10 @@
+use cachecat::indexing::IndexingMode;
 use cachecat::library::{ExportFormat, SortOrder};
 use cachecat::worker::{Command, Event, Item, SearchMode, Worker};
 use gpui::{prelude::*, *};
 use gpui_component::{
-    Disableable, IconName, Root, Theme, ThemeMode, WindowExt,
-    button::{Button, ButtonVariants},
+    Disableable, IconName, Root, Selectable, Theme, ThemeMode, WindowExt,
+    button::{Button, ButtonGroup, ButtonVariants},
     input::{Input, InputEvent, InputState},
     menu::{DropdownMenu, PopupMenuItem},
     select::{Select, SelectEvent, SelectState},
@@ -51,6 +52,7 @@ struct Settings {
     sort: SortOrder,
     sidebar_width: f32,
     details_width: f32,
+    indexing_mode: IndexingMode,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -60,6 +62,7 @@ impl Default for Settings {
             sort: SortOrder::default(),
             sidebar_width: 232.,
             details_width: 320.,
+            indexing_mode: IndexingMode::default(),
         }
     }
 }
@@ -95,6 +98,8 @@ struct CacheCat {
     model_ready: bool,
     downloading: bool,
     paused: bool,
+    indexing_mode: IndexingMode,
+    gpu_available: Option<bool>,
     columns: usize,
     scroll: UniformListScrollHandle,
     _subscriptions: Vec<Subscription>,
@@ -227,7 +232,7 @@ impl CacheCat {
             }),
         ];
         let mut this = Self {
-            worker: Worker::start(data.clone(), cpu, legacy),
+            worker: Worker::start(data.clone(), cpu, settings.indexing_mode, legacy),
             previews: previews::MemoryPreviews::new(),
             preview_range: 0..0,
             data,
@@ -258,6 +263,8 @@ impl CacheCat {
             model_ready: false,
             downloading: false,
             paused: false,
+            indexing_mode: IndexingMode::Cpu,
+            gpu_available: None,
             columns: 4,
             scroll: UniformListScrollHandle::new(),
             _subscriptions: subscriptions,
@@ -401,6 +408,10 @@ impl CacheCat {
                 }
                 Event::Status(s) => self.status = s,
                 Event::Backend(backend) => self.backend = backend,
+                Event::IndexingMode(mode, gpu) => {
+                    self.indexing_mode = mode;
+                    self.gpu_available = Some(gpu);
+                }
                 Event::Error(e) => {
                     self.error = Some(e);
                 }
@@ -537,15 +548,15 @@ impl CacheCat {
                 .into_any_element()
         }
     }
-    fn card(&self, i: usize, p: Palette, cx: &mut Context<Self>) -> AnyElement {
+    fn card(&self, i: usize, tile_width: f32, p: Palette, cx: &mut Context<Self>) -> AnyElement {
         let item = &self.items[i];
         let id = item.texture.id.to_string();
         let selected = self.selected == Some(i);
         div()
             .id(i)
-            .flex_1()
+            .w_full()
             .min_w_0()
-            .h(px(214.))
+            .h(px(tile_width + 48.))
             .flex()
             .flex_col()
             .rounded_lg()
@@ -563,8 +574,9 @@ impl CacheCat {
             }))
             .child(
                 div()
-                    .h(px(166.))
+                    .h(px(tile_width - 2.))
                     .w_full()
+                    .flex_shrink_0()
                     .p_2()
                     .bg(rgb(p.card))
                     .child(self.preview_element(i, p)),
@@ -573,28 +585,28 @@ impl CacheCat {
                 div()
                     .px_3()
                     .py_2()
+                    .min_w_0()
                     .flex()
                     .flex_col()
                     .gap_1()
-                    .child(div().text_xs().font_family("monospace").child(format!(
-                        "{}…{}",
-                        &id[..8],
-                        &id[32..]
-                    )))
                     .child(
                         div()
                             .text_xs()
-                            .text_color(rgb(p.muted))
-                            .child(if item.indexed {
-                                "Search ready".to_string()
-                            } else if item.error.is_some() {
-                                "Incomplete cache entry".into()
-                            } else if let Some((w, h)) = item.dimensions {
-                                format!("{w} × {h}")
-                            } else {
-                                "Texture".into()
-                            }),
-                    ),
+                            .truncate()
+                            .font_family("monospace")
+                            .child(format!("{}…{}", &id[..8], &id[32..])),
+                    )
+                    .child(div().text_xs().truncate().text_color(rgb(p.muted)).child(
+                        if item.indexed {
+                            "Search ready".to_string()
+                        } else if item.error.is_some() {
+                            "Incomplete cache entry".into()
+                        } else if let Some((w, h)) = item.dimensions {
+                            format!("{w} × {h}")
+                        } else {
+                            "Texture".into()
+                        },
+                    )),
             )
             .into_any_element()
     }

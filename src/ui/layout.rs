@@ -202,9 +202,9 @@ impl Render for CacheCat {
             self.settings.details_width,
             details,
         );
-        self.columns = (((width - left - right - if details { 12. } else { 6. } - 40.) / 190.)
-            .floor() as usize)
-            .max(1);
+        let grid_width = width - left - right - if details { 12. } else { 6. } - 40.;
+        self.columns = ((grid_width / 190.).floor() as usize).max(1);
+        let tile_width = (grid_width - 12. * (self.columns - 1) as f32) / self.columns as f32;
         let indexed = self.items.iter().filter(|i| i.indexed).count();
         let unavailable = self
             .items
@@ -266,8 +266,7 @@ impl Render for CacheCat {
                         }
                     },
                 )),
-            )
-            .child(div().flex_1().min_h(px(20.)));
+            );
         sidebar = sidebar
             .child(
                 sidebar_button(
@@ -285,6 +284,39 @@ impl Render for CacheCat {
                     let _ = this.worker.commands.send(Command::Pause(this.paused));
                     cx.notify();
                 })),
+            )
+            .child(
+                div().w_full().flex_shrink_0().flex().flex_col().gap_2()
+                    .child(div().text_sm().text_color(rgb(p.muted)).child("Indexing device"))
+                    .child(
+                        ButtonGroup::new("indexing-device").w_full().compact()
+                            .children(IndexingMode::ALL.into_iter().map(|mode| {
+                                let available = mode.available(self.gpu_available == Some(true));
+                                Button::new(mode.label())
+                                    .label(mode.label()).flex_1().min_w_0().px_1().text_size(px(11.))
+                                    .selected(self.indexing_mode == mode)
+                                    .disabled(!available)
+                                    .tooltip(if !available {
+                                        if self.gpu_available.is_none() { "Checking GPU availability" } else { "GPU acceleration is unavailable on this system or build" }
+                                    } else {
+                                        match mode {
+                                            IndexingMode::GpuCpu => "Index concurrently with GPU and CPU workers",
+                                            IndexingMode::Gpu => "Use GPU acceleration; decoding and some model operations still use CPU",
+                                            IndexingMode::Cpu => "Index using the CPU worker only",
+                                        }
+                                    })
+                            }))
+                            .on_click(cx.listener(|this, selected: &Vec<usize>, _, cx| {
+                                let Some(mode) = selected.first().and_then(|&i| IndexingMode::ALL.get(i)).copied() else { return; };
+                                if mode.available(this.gpu_available == Some(true)) {
+                                    this.indexing_mode = mode;
+                                    this.settings.indexing_mode = mode;
+                                    let _ = this.worker.commands.send(Command::IndexingMode(mode));
+                                    this.save();
+                                    cx.notify();
+                                }
+                            }))
+                    )
             )
             .child(
                 div()
@@ -405,12 +437,16 @@ impl Render for CacheCat {
                             .map(|row| {
                                 let start = row * this.columns;
                                 let end = (start + this.columns).min(this.visible.len());
-                                let mut line = div().h(px(226.)).flex().gap_3().pb_3();
+                                let mut line = div()
+                                    .w_full()
+                                    .h(px(tile_width + 60.))
+                                    .grid()
+                                    .grid_cols(this.columns as u16)
+                                    .gap_3()
+                                    .pb_3();
                                 for j in start..end {
-                                    line = line.child(this.card(this.visible[j], p, cx));
-                                }
-                                for _ in end - start..this.columns {
-                                    line = line.child(div().flex_1().min_w_0());
+                                    line =
+                                        line.child(this.card(this.visible[j], tile_width, p, cx));
                                 }
                                 line
                             })
@@ -573,5 +609,6 @@ mod tests {
         assert!(settings.appearance == Appearance::Dark);
         assert_eq!(settings.sidebar_width, 232.);
         assert_eq!(settings.details_width, 320.);
+        assert_eq!(settings.indexing_mode, IndexingMode::GpuCpu);
     }
 }

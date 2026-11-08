@@ -17,6 +17,8 @@ use std::{
 struct Args {
     #[arg(long, hide = true)]
     inference_worker: bool,
+    #[arg(long, hide = true)]
+    probe_gpu: bool,
     /// Viewer cache folder (or texturecache subfolder).
     #[arg(long)]
     cache: Option<PathBuf>,
@@ -38,6 +40,9 @@ struct Args {
 }
 fn main() -> Result<()> {
     let args = Args::parse();
+    if args.probe_gpu {
+        return model::probe_gpu();
+    }
     if args.inference_worker {
         return model::inference_worker(
             args.data_dir

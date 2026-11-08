@@ -1,5 +1,6 @@
 pub mod cache;
 pub mod index;
+pub mod indexing;
 pub mod library;
 pub mod model;
 pub mod preview;

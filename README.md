@@ -10,6 +10,7 @@ Textures and searches stay on your device.
 - Browse cached textures and filter by UUID.
 - Search colours, shapes and materials with local SigLIP indexing.
 - Search while indexing continues, with progress and partial results shown.
+- Choose GPU+CPU, GPU or CPU indexing, depending on available acceleration.
 - Sort textures, copy UUIDs, and export PNG or TGA.
 - Light and dark themes, with system preference support.
 
@@ -25,7 +26,7 @@ The desktop app is portable: its index, models and settings live in `data/`
 beside the executable (beside `CacheCat.app` on macOS). Keep this folder when moving or
 updating the app.
 
-Thumbnails are decoded on demand for visible items and kept only in memory.
+Thumbnails are decoded on demand and retained in a 256 MiB memory cache for smoother scrolling.
 
 ## Responsible use
 

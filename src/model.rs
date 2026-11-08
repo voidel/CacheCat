@@ -175,7 +175,7 @@ struct Engine {
     accelerated: bool,
 }
 
-fn session(path: &Path, gpu: bool) -> Result<Session> {
+fn session_builder(gpu: bool) -> Result<ort::session::builder::SessionBuilder> {
     let threads = std::env::var("CACHECAT_CPU_THREADS")
         .ok()
         .and_then(|v| v.parse::<usize>().ok())
@@ -224,7 +224,60 @@ fn session(path: &Path, gpu: bool) -> Result<Session> {
         builder
     };
     let _ = gpu;
-    Ok(builder.commit_from_file(path)?)
+    Ok(builder)
+}
+
+fn session(path: &Path, gpu: bool) -> Result<Session> {
+    Ok(session_builder(gpu)?.commit_from_file(path)?)
+}
+
+/// Runs only in the isolated hardware-probe process, before models are downloaded.
+pub fn probe_gpu() -> Result<()> {
+    #[cfg(target_os = "windows")]
+    unsafe {
+        windows_sys::Win32::System::Diagnostics::Debug::SetErrorMode(0x0001 | 0x0002);
+    }
+    ensure!(
+        cfg!(any(
+            target_os = "windows",
+            target_os = "macos",
+            all(target_os = "linux", feature = "cuda")
+        )),
+        "No GPU provider in this build"
+    );
+    session_builder(true)?;
+    Ok(())
+}
+
+pub fn gpu_available() -> bool {
+    let probe = (|| -> Result<bool> {
+        use std::process::{Command, Stdio};
+        let mut command = Command::new(std::env::current_exe()?);
+        command
+            .arg("--probe-gpu")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x08000000);
+        }
+        let mut child = command.spawn()?;
+        let start = std::time::Instant::now();
+        loop {
+            if let Some(status) = child.try_wait()? {
+                return Ok(status.success());
+            }
+            if start.elapsed() > Duration::from_secs(10) {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Ok(false);
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    })();
+    probe.unwrap_or(false)
 }
 
 impl Engine {
@@ -412,6 +465,10 @@ struct Response {
     error: Option<String>,
 }
 impl Model {
+    pub fn accelerated(&self) -> bool {
+        !self.backend.starts_with("CPU")
+    }
+
     pub fn load(dir: &Path, force_cpu: bool) -> Result<Self> {
         match Self::spawn(dir, force_cpu) {
             Ok(m) => Ok(m),
