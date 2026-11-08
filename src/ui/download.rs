@@ -32,7 +32,8 @@ impl CacheCat {
         self.download_dialog = true;
         let state = self.download_state.clone();
         let view = cx.weak_entity();
-        window.open_dialog(cx, move |dialog, _, _| {
+        window.open_dialog(cx, move |dialog, _, cx| {
+            let p = Palette::new(Theme::global(cx).is_dark());
             let state = state.borrow();
             let busy = state.busy;
             let fraction = state.done as f32 / state.total.max(1) as f32;
@@ -45,8 +46,8 @@ impl CacheCat {
                     .on_click(|_, _, cx| cx.open_url(cachecat::model::MODEL_SOURCE)));
             if busy {
                 content = content
-                    .child(div().h(px(6.)).w_full().rounded_full().bg(rgb(0x59645b))
-                        .child(div().h_full().w(relative(fraction)).rounded_full().bg(rgb(0x8eb965))))
+                    .child(div().h(px(6.)).w_full().rounded_full().bg(rgb(p.card))
+                        .child(div().h_full().w(relative(fraction)).rounded_full().bg(rgb(p.accent))))
                     .child(if state.total > 0 && state.done == state.total {
                         "Download complete. Loading model…".to_owned()
                     } else {
@@ -70,7 +71,7 @@ impl CacheCat {
                 })
                 .footer(move |_, cancel, window, cx| vec![
                     cancel(window, cx),
-                    Button::new("download-model").label(if busy { "Downloading…" } else { "Download model" })
+                    Button::new("download-model").primary().label(if busy { "Downloading…" } else { "Download model" })
                         .disabled(busy)
                         .on_click({
                             let view = download_view.clone();

@@ -3,7 +3,7 @@ use cachecat::worker::{Command, Event, Item, SearchMode, Worker};
 use gpui::{prelude::*, *};
 use gpui_component::{
     Disableable, IconName, Root, Theme, ThemeMode, WindowExt,
-    button::Button,
+    button::{Button, ButtonVariants},
     input::{Input, InputEvent, InputState},
     menu::{DropdownMenu, PopupMenuItem},
     select::{Select, SelectEvent, SelectState},
@@ -22,7 +22,9 @@ use std::{
 
 mod download;
 mod icons;
+mod theme;
 use icons::Icon;
+use theme::Palette;
 
 #[derive(Default, Clone, Copy, Serialize, Deserialize, PartialEq)]
 enum Appearance {
@@ -57,41 +59,6 @@ impl Default for Settings {
             sort: SortOrder::default(),
             sidebar_width: 232.,
             details_width: 320.,
-        }
-    }
-}
-#[derive(Clone, Copy)]
-struct Palette {
-    bg: u32,
-    panel: u32,
-    card: u32,
-    line: u32,
-    text: u32,
-    muted: u32,
-    accent: u32,
-}
-impl Palette {
-    fn new(dark: bool) -> Self {
-        if dark {
-            Self {
-                bg: 0x141817,
-                panel: 0x1b201e,
-                card: 0x232a26,
-                line: 0x343e37,
-                text: 0xeff5ed,
-                muted: 0x9aaa9d,
-                accent: 0xb4e78c,
-            }
-        } else {
-            Self {
-                bg: 0xf4f6f0,
-                panel: 0xffffff,
-                card: 0xe9eee3,
-                line: 0xd9e1d3,
-                text: 0x243021,
-                muted: 0x6c7966,
-                accent: 0x527b35,
-            }
         }
     }
 }
@@ -328,6 +295,8 @@ impl CacheCat {
             Appearance::Light => Theme::change(ThemeMode::Light, Some(window), cx),
             Appearance::Dark => Theme::change(ThemeMode::Dark, Some(window), cx),
         }
+        self.palette(window).apply(Theme::global_mut(cx));
+        window.refresh();
     }
     fn palette(&self, window: &Window) -> Palette {
         Palette::new(match self.settings.appearance {

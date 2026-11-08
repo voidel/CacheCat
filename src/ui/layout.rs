@@ -371,7 +371,7 @@ impl Render for CacheCat {
             );
         }
         if semantic && self.model_ready && pending > 0 {
-            main = main.child(div().w_full().px_3().py_2().rounded_md().bg(rgb(p.card)).text_sm().text_color(rgb(p.accent))
+            main = main.child(div().w_full().px_3().py_2().rounded_md().bg(rgb(p.card)).text_sm().text_color(rgb(p.accent_label))
                 .child("Indexing is not complete yet — results may be partial. New matches appear as textures are indexed."));
         }
         if self.visible.is_empty() {

@@ -1,5 +1,18 @@
 # Verification record
 
+## pom.zone colours — 2026-11-08
+
+Light mode uses pom.zone's white surfaces, warm neutral text and coral accents.
+Dark mode uses its cocoa palette and a brighter coral for contrast. Custom panels
+and GPUI inputs, dropdowns, menus, dialogs and progress indicators share the same
+palette, reapplied after appearance changes. System preference support is retained.
+
+Windows tests, formatting and strict Clippy passed; the portable Windows archive
+was rebuilt. The isolated Linux check and all 16 native tests passed. Twenty
+text/background contrast pairs were checked: minimum 4.70:1 in light mode and
+6.22:1 in dark mode. These are colour-token checks, not a full accessibility audit.
+Native visual interaction was not exercised on the user's active desktop.
+
 ## Desktop-only scope — 2026-11-08
 
 CacheCat now ships only the native application. The browser source, browser tests,
