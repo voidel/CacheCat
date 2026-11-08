@@ -25,6 +25,22 @@ The desktop app is portable: its index, models, thumbnails and settings live in 
 beside the executable (beside `CacheCat.app` on macOS). Keep this folder when moving or
 updating the app.
 
+## Responsible use
+
+Do not use CacheCat in violation of [Linden Lab’s Terms of Service](https://lindenlab.com/tos),
+the [Second Life Terms and Conditions](https://lindenlab.com/legal/second-life-terms-and-conditions),
+or applicable law.
+
+Only download, export, copy or reuse assets where you hold the necessary rights or
+have the rights holder’s permission for that use. An asset appearing in your
+viewer’s cache does not give you ownership or permission to use it. Purchasing an
+in-world item does not automatically grant permission to export its assets.
+
+You are solely responsible for verifying permissions and for the assets you
+download, export or use with CacheCat. CacheCat’s authors and contributors do not
+authorise or endorse infringement and, to the extent permitted by applicable law,
+disclaim liability for misuse of the software.
+
 ## Build
 
 With Rust and the [platform prerequisites](docs/development.md#desktop) installed:
