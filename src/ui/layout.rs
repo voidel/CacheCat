@@ -84,7 +84,12 @@ impl CacheCat {
                     .flex_shrink_0()
                     .bg(rgb(p.card))
                     .rounded_lg()
-                    .child(self.preview_element(self.selected.unwrap(), p)),
+                    .overflow_hidden()
+                    .child(self.preview_element(
+                        self.selected.unwrap(),
+                        p,
+                        size(px(right - 32.), px((right - 32.).min(340.))),
+                    )),
             )
             .child(div().text_xs().text_color(rgb(p.muted)).child("ASSET UUID"))
             .child(

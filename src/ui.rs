@@ -577,15 +577,21 @@ impl CacheCat {
         })
         .detach();
     }
-    fn preview_element(&self, i: usize, p: Palette) -> AnyElement {
+    fn preview_element(&self, i: usize, p: Palette, bounds: Size<Pixels>) -> AnyElement {
         if let Some(Ok(image)) = self.previews.get(i) {
             img(image.clone())
-                .size_full()
+                // Explicit dimensions prevent the image's intrinsic aspect ratio
+                // from expanding percentage-sized bounds beyond the preview box.
+                .w(bounds.width)
+                .h(bounds.height)
+                .flex_shrink_0()
                 .object_fit(ObjectFit::Contain)
                 .into_any_element()
         } else {
             div()
-                .size_full()
+                .w(bounds.width)
+                .h(bounds.height)
+                .flex_shrink_0()
                 .flex()
                 .items_center()
                 .justify_center()
@@ -630,11 +636,16 @@ impl CacheCat {
             .child(
                 div()
                     .h(px(tile_width - 2.))
-                    .w_full()
+                    .w(px(tile_width - 2.))
                     .flex_shrink_0()
                     .p_2()
+                    .overflow_hidden()
                     .bg(rgb(p.card))
-                    .child(self.preview_element(i, p)),
+                    .child(self.preview_element(
+                        i,
+                        p,
+                        size(px(tile_width - 18.), px(tile_width - 18.)),
+                    )),
             )
             .into_any_element()
     }
