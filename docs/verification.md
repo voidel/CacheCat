@@ -1,5 +1,21 @@
 # Verification record
 
+Search setup update, 2026-11-08:
+
+- Explicit Semantic/UUID modes and the model download dialog are implemented in
+  desktop and browser. The pinned model and existing embedding keys are unchanged.
+- Windows and isolated Linux builds passed all 16 native tests. Cancellation was
+  tested against a stalled local HTTP transfer: partial files were removed and a
+  retry reused completed verified files. Strict Windows Clippy passed.
+- All eight headless browser tests passed, including failure/retry, cancellation,
+  progress, automatic dialog closure, real WebGPU ranking and partial results.
+  Cached model reuse and search passed with remote model downloads blocked.
+- Browser modal layouts were inspected at desktop and 360px widths in light/dark
+  themes. Native modal interaction was not visually exercised on the active desktop.
+- The rebuilt portable Windows archive correctly ranked all four synthetic
+  textures using the existing model on CPU. The pom.zone browser source was synced;
+  no website deployment or public release was performed.
+
 Local checks, 2026-11-08:
 
 - Windows: `cargo check`, five Rust unit tests, and strict Clippy passed.

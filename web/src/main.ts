@@ -1,6 +1,7 @@
 import './style.css';
-import { uuidQuery, type Item } from './cache';
+import { type Item } from './cache';
 import { getRecord } from './store';
+import { MODEL_SOURCE, type SearchMode } from './model-assets';
 
 const app = document.querySelector<HTMLDivElement>('#app')!;
 const cat = '<svg viewBox="0 0 48 48" fill="none" aria-hidden="true"><path d="M9 21 7 7l13 8a25 25 0 0 1 8 0L41 7l-2 14c5 17-3 22-15 22S4 38 9 21Z" stroke="currentColor" stroke-width="2.4" stroke-linejoin="round"/><path d="M15 27h2m14 0h2m-12 7 3 2 3-2M4 29l7 2m26 0 7-2M5 37h7m24 0h7" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/></svg>';
@@ -12,18 +13,21 @@ app.innerHTML = `<aside class="sidebar">
   <div class="sidebar-bottom"><a href="https://github.com/voidel/CacheCat" target="_blank" rel="noopener">Open-source on GitHub ↗</a><label for="theme">Appearance</label><select id="theme"><option value="system">System setting</option><option value="light">Light</option><option value="dark">Dark</option></select><a href="../">About CacheCat ↗</a></div>
 </aside>
 <main class="workspace"><header><div><p class="eyebrow">SECOND LIFE CACHE EXPLORER</p><h1>Texture library</h1><p class="subtitle">Browse and search your Second Life cache.</p></div><span class="local-badge">● &nbsp; LOCAL ONLY</span></header>
-<div class="search-box"><span aria-hidden="true">⌕</span><input id="search" type="search" aria-label="Search textures or UUID" placeholder="Red silk, weathered stone, floral patterns… or a UUID" autocomplete="off" spellcheck="false"><kbd>/</kbd></div>
+<div class="search-box"><span aria-hidden="true">⌕</span><input id="search" type="search" aria-label="Search textures" placeholder="Red silk, weathered stone, floral patterns…" autocomplete="off" spellcheck="false"><select id="search-mode" aria-label="Search mode"><option value="semantic" selected>Semantic</option><option value="uuid">UUID</option></select></div>
 <div class="library-toolbar"><span id="result-count">Your texture library</span><span id="sort-label">↓ &nbsp; Most recent first</span></div>
 <div id="notice" class="notice" role="status" hidden></div><div id="error" class="error" role="alert" hidden></div>
 <section id="viewport" aria-label="Cached textures" tabindex="0"><div id="spacer"></div><div id="grid"></div><div id="empty"><div class="empty-cat">${cat}</div><p class="eyebrow">LOCAL CACHE VIEWER</p><h2>Open a texture cache</h2><p>Select your viewer’s texture cache folder.<br>Everything is read and processed on your device.</p><button id="empty-open" class="button primary">Choose a cache folder <span>↗</span></button><p class="small">Firestorm & Second Life · Read-only access</p></div></section>
-<footer class="index-panel"><div class="index-heading"><div><span class="status-dot"></span><strong>Semantic index</strong><span id="backend">On-device SigLIP</span></div><button id="pause" class="text-button" disabled>Pause indexing</button></div><div class="progress-row"><progress id="progress" max="1" value="0" aria-label="Texture embedding progress"></progress><span id="percentage">0%</span></div><div class="index-meta"><span id="progress-label">0 / 0 embeddings indexed</span><span id="pending-label">Open a cache to begin</span></div><div class="model-row"><p id="status">Enable semantic search to find colours, shapes, and objects.<br><span>One-time model download: about 213 MB. Processing stays local.</span></p><button id="enable" class="button compact">Enable semantic search</button></div></footer></main>
+<footer class="index-panel"><div class="index-heading"><div><span class="status-dot"></span><strong>Semantic index</strong><span id="backend">On-device SigLIP</span></div><button id="pause" class="text-button" disabled>Pause indexing</button></div><div class="progress-row"><progress id="progress" max="1" value="0" aria-label="Texture embedding progress"></progress><span id="percentage">0%</span></div><div class="index-meta"><span id="progress-label">0 / 0 embeddings indexed</span><span id="pending-label">Open a cache to begin</span></div><div class="model-row"><p id="status">Search by description or choose UUID.</p></div></footer></main>
 <dialog id="details"><button id="close-details" class="close-button" aria-label="Close texture details">×</button><div id="detail-image"></div><p class="eyebrow">TEXTURE DETAILS</p><h2 id="detail-title"></h2><code id="detail-uuid"></code><p id="detail-status"></p><button id="copy" class="button primary">Copy UUID</button></dialog>
+<dialog id="model-dialog" aria-labelledby="model-title"><h2 id="model-title">Download search model</h2><p>Semantic search needs a one-time model download (213 MB). Your textures and searches stay on this device.</p><a id="model-source" href="${MODEL_SOURCE}" target="_blank" rel="noopener noreferrer">View public model download on Hugging Face ↗</a><div id="model-progress-area" hidden><progress id="model-progress" max="1" value="0" aria-label="Model download progress"></progress><p id="model-progress-label" role="status"></p></div><p id="model-error" role="alert" hidden></p><div class="dialog-actions"><button id="cancel-model" class="button">Cancel</button><button id="download-model" class="button primary">Download model</button></div></dialog>
 <input id="folder-input" type="file" webkitdirectory multiple hidden>`;
 
 function el<T extends HTMLElement>(id: string) { return document.getElementById(id) as T; }
 let worker: Worker | undefined, items: Item[] = [], visible: number[] = [];
 let directory: FileSystemDirectoryHandle | undefined, selectedFiles: File[] | undefined;
-let paused = false, query = '', modelState = 'off';
+let paused = false, query = '', modelState = 'checking';
+let mode: SearchMode = 'semantic';
+let promptDismissed = false;
 let total = 0, indexed = 0, unavailable = 0, pending = 0;
 let renderQueued = false, queryTimer: ReturnType<typeof setTimeout>;
 const viewport = el<HTMLDivElement>('viewport'), grid = el<HTMLDivElement>('grid');
@@ -52,12 +56,12 @@ function updateProgress() {
   el('pending-label').textContent = `${pending.toLocaleString()} pending${unavailable ? ` · ${unavailable.toLocaleString()} unavailable` : ''}`;
   const partial = total > 0 && pending > 0;
   el('notice').hidden = !partial;
-  el('notice').textContent = modelState !== 'ready' ? 'UUID filtering is available now. Enable semantic search to index and search texture descriptions.' : `${paused ? 'Indexing is paused' : 'Indexing is not complete yet'} — results may be partial. Search uses the ${indexed.toLocaleString()} embeddings ready so far.`;
+  el('notice').textContent = modelState !== 'ready' ? 'Choose UUID to filter without a model, or search in Semantic mode to download it.' : `${paused ? 'Indexing is paused' : 'Indexing is not complete yet'} — results may be partial. Search uses the ${indexed.toLocaleString()} embeddings ready so far.`;
   if (!pending && unavailable) { el('notice').hidden = false; el('notice').textContent = `Indexing finished. ${unavailable.toLocaleString()} incomplete or unsupported textures could not be indexed; search covers the remaining ${indexed.toLocaleString()}.`; }
   el('library-count').textContent = total.toLocaleString();
 }
 function render() {
-  const semantic = query.trim() && !uuidQuery(query);
+  const semantic = query.trim() && mode === 'semantic';
   el('result-count').textContent = `${visible.length.toLocaleString()} textures${semantic ? ' · best matches' : ''}`;
   el('sort-label').textContent = semantic ? '↗  Ranked by similarity' : '↓  Most recent first';
   const empty = el('empty'); empty.hidden = visible.length > 0;
@@ -65,7 +69,7 @@ function render() {
     grid.replaceChildren(); el('spacer').style.height = '0px';
     if (items.length) {
       empty.querySelector('h2')!.textContent = semantic && !indexed ? 'Indexing textures' : 'No matching textures';
-      empty.querySelector('p:not(.eyebrow):not(.small)')!.textContent = semantic && !indexed ? 'Enable semantic search. Matches will appear as embeddings are indexed.' : 'Try a different UUID or description.';
+      empty.querySelector('p:not(.eyebrow):not(.small)')!.textContent = semantic && !indexed ? 'Search in Semantic mode to download the model. Matches appear as indexing progresses.' : 'Try a different UUID or description.';
       el('empty-open').hidden = true;
     } else el('empty-open').hidden = false;
     return;
@@ -103,34 +107,55 @@ async function showDetail(i: number) {
   el('copy').textContent = 'Copy UUID';
   el('copy').onclick = async () => { try { await navigator.clipboard.writeText(item.id); el('copy').textContent = 'Copied'; } catch { el('copy').textContent = 'Select and copy the UUID above'; } };
 }
-function openSource(source: { directory: FileSystemDirectoryHandle } | { files: File[] }) {
-  worker?.terminate(); worker = new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' });
-  items = []; visible = []; total = indexed = unavailable = pending = 0; paused = false; modelState = 'off';
+function openSource(source: { directory: FileSystemDirectoryHandle } | { files: File[] }, autoModel = true) {
+  startWorker(autoModel);
+  items = []; visible = []; total = indexed = unavailable = pending = 0; paused = false;
   el('error').hidden = true; el('source').textContent = 'directory' in source ? source.directory.name : source.files[0]?.webkitRelativePath.split('/')[0] ?? 'Selected folder';
   el<HTMLButtonElement>('rescan').disabled = false; el<HTMLButtonElement>('pause').disabled = false;
-  el('pause').textContent = 'Pause indexing'; el<HTMLButtonElement>('enable').disabled = false; el('enable').hidden = false; el('enable').textContent = 'Enable semantic search';
+  el('pause').textContent = 'Pause indexing';
   el('backend').textContent = 'On-device SigLIP'; viewport.scrollTop = 0; status('Reading your cache locally…'); updateProgress(); requestRender();
+  worker!.postMessage({ type: 'open', source });
+}
+function startWorker(autoModel = true) {
+  worker?.terminate();
+  worker = new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' });
+  modelState = autoModel ? 'checking' : 'off';
   worker.onerror = event => { warning(`The background worker stopped: ${event.message}. Rescan to restart.`); };
   worker.onmessage = ({ data }) => {
-    if (data.type === 'loaded') { items = data.items; total = items.length; status('Loading texture previews…'); worker!.postMessage({ type: 'search', query }); }
+    if (data.type === 'loaded') { items = data.items; total = items.length; status('Loading texture previews…'); submitSearch(false); }
     else if (data.type === 'item') { items[data.i] = data.item; requestRender(); }
-    else if (data.type === 'results' && data.query === query) { visible = data.matches; requestRender(); }
+    else if (data.type === 'results' && data.query === query && data.mode === mode) { visible = data.matches; requestRender(); }
     else if (data.type === 'progress') {
       ({ total, indexed, unavailable, pending } = data); el('backend').textContent = data.backend; updateProgress();
       if (!pending && total) status(unavailable ? 'Indexing finished. Unavailable textures are excluded from semantic results.' : 'Indexing finished. Search is ready.');
-      else if (data.previewsComplete && modelState === 'off') status('Previews loaded. Enable semantic search to index texture descriptions.');
+      else if (data.previewsComplete && modelState === 'off') status('Previews loaded. Search by description or choose UUID.');
     }
     else if (data.type === 'status') status(data.message);
     else if (data.type === 'warning' || data.type === 'error') warning(data.message);
     else if (data.type === 'preview') { volatile.set(data.hash, data.blob); if (volatile.size > 150) volatile.delete(volatile.keys().next().value!); }
     else if (data.type === 'model') {
       modelState = data.state;
-      el<HTMLButtonElement>('enable').disabled = data.state === 'loading'; el('enable').textContent = data.state === 'loading' ? 'Loading model…' : 'Retry semantic search';
-      el('enable').hidden = data.state === 'ready';
-      if (data.state === 'ready') status('Indexing on your device. You can search straight away.'); updateProgress();
+      const dialog = el<HTMLDialogElement>('model-dialog');
+      if (data.state === 'ready') {
+        dialog.close(); paused = false; el('pause').textContent = 'Pause indexing';
+        status('Indexing on your device. You can search straight away.');
+      } else if (data.state === 'error') {
+        el('model-error').textContent = data.message; el('model-error').hidden = false;
+        el<HTMLButtonElement>('download-model').disabled = false;
+        el('download-model').textContent = 'Retry download';
+      } else if (data.state === 'off') submitSearch(false);
+      updateProgress();
+    } else if (data.type === 'download-progress') {
+      if (data.total) {
+        el<HTMLProgressElement>('model-progress').max = data.total;
+        el<HTMLProgressElement>('model-progress').value = data.done;
+        el('model-progress-label').textContent = `${(data.done / 1e6).toFixed(1)} / ${(data.total / 1e6).toFixed(1)} MB · ${Math.floor(data.done / data.total * 100)}%`;
+        if (data.done === data.total) el('model-progress-label').textContent += ' · Loading model…';
+      } else el('model-progress-label').textContent = data.message;
+
     }
   };
-  worker.postMessage({ type: 'open', source });
+  if (autoModel) worker.postMessage({ type: 'check-model' });
 }
 async function pickFolder() {
   el('error').hidden = true;
@@ -149,10 +174,49 @@ el('open').onclick = () => void pickFolder(); el('empty-open').onclick = () => v
 el<HTMLInputElement>('folder-input').onchange = event => { selectedFiles = Array.from((event.target as HTMLInputElement).files ?? []); directory = undefined; if (selectedFiles.length) openSource({ files: selectedFiles }); };
 el('rescan').onclick = () => { if (directory) openSource({ directory }); else el<HTMLInputElement>('folder-input').click(); };
 el('pause').onclick = () => { paused = !paused; worker?.postMessage({ type: 'pause', paused }); el('pause').textContent = paused ? 'Resume indexing' : 'Pause indexing'; updateProgress(); };
-el('enable').onclick = () => { if (!worker) { warning('Open a cache folder first, then enable semantic search.'); return; } worker.postMessage({ type: 'enable' }); };
+function submitSearch(userAction = true) {
+  if (userAction) promptDismissed = false;
+  worker?.postMessage({ type: 'search', query, mode });
+  if (query.trim() && mode === 'semantic' && ['off', 'error'].includes(modelState) && !promptDismissed) {
+    const dialog = el<HTMLDialogElement>('model-dialog');
+    if (!dialog.open) {
+      el('model-progress-area').hidden = true; el('model-error').hidden = true;
+      el<HTMLButtonElement>('download-model').disabled = false; el('download-model').textContent = 'Download model';
+      dialog.showModal();
+    }
+  }
+}
+function cancelModel() {
+  promptDismissed = true;
+  el<HTMLDialogElement>('model-dialog').close();
+  if (modelState === 'loading') {
+    // Terminating the worker aborts its pending fetches and model initialization.
+    // Completed files/embeddings remain in browser storage for retry.
+    if (directory) openSource({ directory }, false);
+    else if (selectedFiles) openSource({ files: selectedFiles }, false);
+    else startWorker(false);
+    status('Model download cancelled. UUID search is available.');
+  }
+}
+el('cancel-model').onclick = cancelModel;
+el<HTMLDialogElement>('model-dialog').oncancel = event => { event.preventDefault(); cancelModel(); };
+el('download-model').onclick = () => {
+  el<HTMLButtonElement>('download-model').disabled = true;
+  el('download-model').textContent = 'Downloading…'; el('model-error').hidden = true;
+  el('model-progress-area').hidden = false;
+  el<HTMLProgressElement>('model-progress').value = 0;
+  el('model-progress-label').textContent = 'Preparing download…';
+  modelState = 'loading'; worker!.postMessage({ type: 'enable' });
+};
 el<HTMLInputElement>('search').oninput = event => {
   query = (event.target as HTMLInputElement).value; clearTimeout(queryTimer); viewport.scrollTop = 0; visible = []; requestRender();
-  queryTimer = setTimeout(() => worker?.postMessage({ type: 'search', query }), 180);
+  queryTimer = setTimeout(() => submitSearch(), 250);
+};
+el<HTMLInputElement>('search').onkeydown = event => { if (event.key === 'Enter') { clearTimeout(queryTimer); submitSearch(); } };
+el<HTMLSelectElement>('search-mode').onchange = event => {
+  mode = (event.target as HTMLSelectElement).value as SearchMode;
+  el<HTMLInputElement>('search').placeholder = mode === 'uuid' ? 'Enter an asset UUID…' : 'Red silk, weathered stone, floral patterns…';
+  clearTimeout(queryTimer); visible = []; requestRender(); submitSearch();
 };
 viewport.addEventListener('scroll', requestRender, { passive: true }); new ResizeObserver(requestRender).observe(viewport);
 el('close-details').onclick = () => el<HTMLDialogElement>('details').close();
@@ -160,5 +224,7 @@ const theme = el<HTMLSelectElement>('theme');
 try { theme.value = localStorage.getItem('cachecat-theme') ?? 'system'; } catch { /* Private browsing. */ }
 function applyTheme() { document.documentElement.dataset.theme = theme.value; try { localStorage.setItem('cachecat-theme', theme.value); } catch { /* Theme still applies to this visit. */ } }
 theme.onchange = applyTheme; applyTheme();
-document.addEventListener('keydown', event => { if (event.key === '/' && !(event.target instanceof HTMLInputElement) && !el<HTMLDialogElement>('details').open) { event.preventDefault(); el('search').focus(); } });
+document.addEventListener('keydown', event => { if (event.key === '/' && !(event.target instanceof HTMLInputElement) && !el<HTMLDialogElement>('details').open && !el<HTMLDialogElement>('model-dialog').open) { event.preventDefault(); el('search').focus(); } });
 requestRender();
+
+startWorker();

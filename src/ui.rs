@@ -1,8 +1,8 @@
 use cachecat::library::{ExportFormat, SortOrder};
-use cachecat::worker::{Command, Event, Item, Worker};
+use cachecat::worker::{Command, Event, Item, SearchMode, Worker};
 use gpui::{prelude::*, *};
 use gpui_component::{
-    Disableable, IconName, Root, Theme, ThemeMode,
+    Disableable, IconName, Root, Theme, ThemeMode, WindowExt,
     button::Button,
     input::{Input, InputEvent, InputState},
     menu::{DropdownMenu, PopupMenuItem},
@@ -10,10 +10,17 @@ use gpui_component::{
 };
 use serde::{Deserialize, Serialize};
 use std::{
+    cell::RefCell,
     path::PathBuf,
+    rc::Rc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant},
 };
 
+mod download;
 mod icons;
 use icons::Icon;
 
@@ -93,6 +100,11 @@ struct CacheCat {
     data: PathBuf,
     settings: Settings,
     search: Entity<InputState>,
+    mode_select: Entity<SelectState<Vec<SharedString>>>,
+    mode: SearchMode,
+    download_dialog: bool,
+    download_cancel: Arc<AtomicBool>,
+    download_state: Rc<RefCell<download::DownloadState>>,
     theme_select: Entity<SelectState<Vec<SharedString>>>,
     sort_select: Entity<SelectState<Vec<SharedString>>>,
     items: Vec<Item>,
@@ -141,9 +153,17 @@ impl CacheCat {
         if settings.cache.is_none() {
             settings.cache = cachecat::cache::default_path();
         }
-        let search = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder("Search textures, colours, shapes… or paste a UUID")
+        let search = cx
+            .new(|cx| InputState::new(window, cx).placeholder("Search textures, colours, shapes…"));
+        let mode_select = cx.new(|cx| {
+            let mut state = SelectState::new(
+                vec![SharedString::from("Semantic"), SharedString::from("UUID")],
+                None,
+                window,
+                cx,
+            );
+            state.set_selected_value(&SharedString::from("Semantic"), window, cx);
+            state
         });
         let themes = [Appearance::System, Appearance::Light, Appearance::Dark];
         let theme_select = cx.new(|cx| {
@@ -169,6 +189,31 @@ impl CacheCat {
             state
         });
         let subscriptions = vec![
+            cx.subscribe_in(&mode_select, window, |this, _, event, window, cx| {
+                if let SelectEvent::Confirm(Some(value)) = event {
+                    this.mode = if value.as_ref() == "UUID" {
+                        SearchMode::Uuid
+                    } else {
+                        SearchMode::Semantic
+                    };
+                    this.search.update(cx, |input, cx| {
+                        input.set_placeholder(
+                            if this.mode == SearchMode::Uuid {
+                                "Enter an asset UUID…"
+                            } else {
+                                "Search textures, colours, shapes…"
+                            },
+                            window,
+                            cx,
+                        )
+                    });
+                    this.query_changed = Some(Instant::now());
+                    this.matches.clear();
+                    this.visible.clear();
+                    this.selected = None;
+                    cx.notify();
+                }
+            }),
             cx.subscribe_in(&theme_select, window, |this, _, event, window, cx| {
                 if let SelectEvent::Confirm(Some(value)) = event {
                     this.settings.appearance =
@@ -194,7 +239,7 @@ impl CacheCat {
                 }
             }),
             cx.subscribe_in(&search, window, |this, _, event, _, cx| {
-                if matches!(event, InputEvent::Change) {
+                if matches!(event, InputEvent::Change | InputEvent::PressEnter { .. }) {
                     this.query = this.search.read(cx).value().to_string();
                     this.query_changed = Some(Instant::now());
                     this.visible.clear();
@@ -216,6 +261,11 @@ impl CacheCat {
             data,
             settings,
             search,
+            mode_select,
+            mode: SearchMode::Semantic,
+            download_dialog: false,
+            download_cancel: Arc::new(AtomicBool::new(false)),
+            download_state: Rc::new(RefCell::new(download::DownloadState::default())),
             theme_select,
             sort_select,
             items: vec![],
@@ -244,12 +294,15 @@ impl CacheCat {
         if let Some(path) = this.settings.cache.clone() {
             this.open(path, cx);
         }
-        cx.spawn(async move |view, cx| {
+        cx.spawn_in(window, async move |view, cx| {
             loop {
                 cx.background_executor()
                     .timer(Duration::from_millis(100))
                     .await;
-                if view.update(cx, |this, cx| this.poll(cx)).is_err() {
+                if view
+                    .update_in(cx, |this, window, cx| this.poll(window, cx))
+                    .is_err()
+                {
                     break;
                 }
             }
@@ -300,10 +353,11 @@ impl CacheCat {
             .worker
             .commands
             .send(Command::Open(self.generation, path));
-        let _ = self
-            .worker
-            .commands
-            .send(Command::Search(self.generation, self.query.clone()));
+        let _ = self.worker.commands.send(Command::Search(
+            self.generation,
+            self.query.clone(),
+            self.mode,
+        ));
         cx.notify();
     }
     fn choose(&mut self, _: &ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
@@ -329,7 +383,7 @@ impl CacheCat {
         })
         .detach();
     }
-    fn poll(&mut self, cx: &mut Context<Self>) {
+    fn poll(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let mut changed = false;
         let mut sort_changed = false;
         if self
@@ -337,10 +391,18 @@ impl CacheCat {
             .is_some_and(|t| t.elapsed() > Duration::from_millis(250))
         {
             self.query_changed = None;
-            let _ = self
-                .worker
-                .commands
-                .send(Command::Search(self.generation, self.query.clone()));
+            if self.mode == SearchMode::Semantic
+                && !self.query.trim().is_empty()
+                && !self.model_ready
+                && !self.download_dialog
+            {
+                self.show_download(window, cx);
+            }
+            let _ = self.worker.commands.send(Command::Search(
+                self.generation,
+                self.query.clone(),
+                self.mode,
+            ));
         }
         for event in self.worker.events.try_iter().take(512) {
             changed = true;
@@ -356,7 +418,9 @@ impl CacheCat {
                         *slot = item;
                     }
                 }
-                Event::Results(g, q, visible) if g == self.generation && q == self.query => {
+                Event::Results(g, q, mode, visible)
+                    if g == self.generation && q == self.query && mode == self.mode =>
+                {
                     self.matches = visible;
                     sort_changed = true;
                 }
@@ -364,11 +428,37 @@ impl CacheCat {
                 Event::Backend(backend) => self.backend = backend,
                 Event::Error(e) => {
                     self.error = Some(e);
+                }
+                Event::DownloadProgress(done, total) => {
+                    let mut state = self.download_state.borrow_mut();
+                    state.done = done;
+                    state.total = total;
+                }
+                Event::DownloadFailed(error) => {
                     self.downloading = false;
+                    let mut state = self.download_state.borrow_mut();
+                    state.busy = false;
+                    state.error = Some(error);
+                }
+                Event::DownloadCancelled => {
+                    self.downloading = false;
+                    self.download_state.borrow_mut().busy = false;
                 }
                 Event::ModelReady(ready) => {
                     self.model_ready = ready;
-                    self.downloading = false;
+                    if ready && self.download_dialog {
+                        self.download_dialog = false;
+                        self.paused = false;
+                        window.close_dialog(cx);
+                    }
+                    if ready || self.error.is_some() {
+                        self.downloading = false;
+                        let mut state = self.download_state.borrow_mut();
+                        state.busy = false;
+                        if !ready {
+                            state.error = self.error.clone();
+                        }
+                    }
                 }
                 _ => {}
             }
@@ -377,6 +467,9 @@ impl CacheCat {
             self.visible = self.settings.sort.sort(&self.items, &self.matches);
         }
         if changed {
+            if self.download_dialog {
+                window.refresh();
+            }
             cx.notify();
         }
     }

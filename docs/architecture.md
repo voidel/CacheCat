@@ -18,6 +18,13 @@ embedding index. It processes a small preview batch first, then interleaves prev
 with embeddings. Commands are handled between items. Search uses all currently
 available embeddings and refreshes as new embeddings arrive.
 
+Search mode is explicit: Semantic is the default; UUID filtering never requests
+the model. A semantic query without a ready model opens a download dialog showing
+the pinned public source, progress and cancellation. Downloads run separately from
+the cache worker, and cancellation aborts pending network reads and removes partial
+files. Verified complete files are reused on retry. The dialog closes when the
+model loads successfully, and indexing and the pending query continue automatically.
+
 After eight initial previews, native indexing alternates preparation and inference.
 Up to 16 prepared 224×224 tensors (about 9.2 MiB) reuse the preview decode; full-size
 textures are not retained. Content hashes are rechecked before using prepared data.
@@ -72,6 +79,10 @@ Thumbnails and embeddings live in IndexedDB, keyed by texture-content hash and
 model/preprocessing identity. The UI keeps a bounded LRU of object URLs for visible
 thumbnails. Browser Cache Storage holds model assets. Storage can be evicted by the
 browser; quota errors are surfaced, with a bounded in-memory preview fallback.
+
+The browser uses the same search/download flow. Fully cached model assets are
+loaded without remote downloads. Cancelling setup terminates the worker to abort
+fetches, then restores the selected cache and saved embeddings in a fresh worker.
 
 Search commands never become URLs. UUID searches operate on the catalogue directly;
 text queries produce local normalized embeddings. Cosine similarity ranks the

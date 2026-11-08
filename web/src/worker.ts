@@ -1,7 +1,8 @@
 /// <reference lib="webworker" />
-import { parseEntries, uuidQuery, similarity, type Item } from './cache';
+import { parseEntries, similarity, type Item } from './cache';
 import { decode, thumbnail } from './decoder';
 import { getRecord, putRecord, MODEL_KEY, type RecordData } from './store';
+import { hasCachedModel, type SearchMode } from './model-assets';
 import type { Inference } from './inference';
 
 type Source = { directory: FileSystemDirectoryHandle } | { files: File[] };
@@ -10,6 +11,7 @@ let headers: File;
 let items: Item[] = [], vectors: (Float32Array | undefined)[] = [];
 let cursor = 0, embedQueue: number[] = [], model: Inference | undefined;
 let paused = false, running = false, loaded = false, modelLoading = false;
+let mode: SearchMode = 'semantic';
 let query = '', queryVector: Float32Array | undefined, searchPending = false;
 let sinceEmbedding = 0, storageWarning = false;
 const volatile = new Map<string, RecordData>();
@@ -75,12 +77,12 @@ function progress() {
   send('progress', { total: items.length, indexed, unavailable, pending: items.length - indexed - unavailable, previewsComplete: cursor >= items.length, backend: model?.backend ?? 'Model not loaded', paused });
 }
 function results() {
-  const uuid = uuidQuery(query);
+  const uuid = query.trim().toLowerCase().replaceAll('-', '');
   let matches: number[] = [];
   if (!query.trim()) matches = items.map((_, i) => i);
-  else if (uuid) matches = items.flatMap((item, i) => item.id.replaceAll('-', '').includes(uuid) ? [i] : []);
-  else if (queryVector) matches = vectors.flatMap((v, i) => v ? [{ i, score: similarity(v, queryVector!) }] : []).sort((a, b) => b.score - a.score || a.i - b.i).slice(0, 200).map(v => v.i);
-  send('results', { query, matches });
+  else if (mode === 'uuid') matches = items.flatMap((item, i) => item.id.replaceAll('-', '').includes(uuid) ? [i] : []);
+  else if (mode === 'semantic' && queryVector) matches = vectors.flatMap((v, i) => v ? [{ i, score: similarity(v, queryVector!) }] : []).sort((a, b) => b.score - a.score || a.i - b.i).slice(0, 200).map(v => v.i);
+  send('results', { query, mode, matches });
 }
 async function processPreview(i: number) {
   const item = items[i];
@@ -118,13 +120,13 @@ async function pump() {
     while (loaded) {
       if (searchPending) {
         searchPending = false;
-        const current = query;
+        const current = query, currentMode = mode;
         queryVector = undefined;
-        if (current.trim() && !uuidQuery(current) && model) {
-          try { const vector = await model.query(current); if (current === query) queryVector = vector; }
+        if (current.trim() && currentMode === 'semantic' && model) {
+          try { const vector = await model.query(current); if (current === query && currentMode === mode) queryVector = vector; }
           catch (error) { send('warning', { message: `Search failed: ${errorText(error)}` }); }
         }
-        if (current === query) results();
+        if (current === query && currentMode === mode) results();
       }
       if (paused) break;
       if (cursor < items.length && (!model || sinceEmbedding < 4 || !embedQueue.length)) {
@@ -149,17 +151,25 @@ self.onmessage = async ({ data }) => {
       headers = await readFile('texture.cache'); loaded = true;
       send('loaded', { items }); progress(); results(); void pump();
     } else if (data.type === 'pause') { paused = data.paused; progress(); void pump(); }
-    else if (data.type === 'search') { query = data.query; queryVector = undefined; searchPending = true; results(); void pump(); }
-    else if (data.type === 'enable' && !modelLoading && !model) {
-      modelLoading = true; send('model', { state: 'loading' });
-      try {
-        const { Inference } = await import('./inference');
-        const candidate = new Inference();
-        await candidate.load(message => send('status', { message }));
-        model = candidate; searchPending = true;
-        send('model', { state: 'ready', backend: model.backend }); void pump();
-      } catch (error) { send('model', { state: 'error' }); throw error; }
-      finally { modelLoading = false; }
+    else if (data.type === 'search') { query = data.query; mode = data.mode === 'uuid' ? 'uuid' : 'semantic'; queryVector = undefined; searchPending = true; results(); void pump(); }
+    else if (data.type === 'enable') await enableModel(false);
+    else if (data.type === 'check-model') {
+      if (await hasCachedModel()) await enableModel(true);
+      else send('model', { state: 'off' });
     }
   } catch (error) { send('error', { message: errorText(error) }); }
 };
+
+async function enableModel(cachedOnly: boolean) {
+  if (modelLoading || model) return;
+  modelLoading = true; send('model', { state: 'loading' });
+  try {
+    const { Inference } = await import('./inference');
+    const candidate = new Inference();
+    await candidate.load((message, done, total) => send('download-progress', { message, done, total }), cachedOnly);
+    model = candidate; searchPending = true; paused = false;
+    send('model', { state: 'ready', backend: model.backend }); void pump();
+  } catch (error) {
+    send('model', { state: cachedOnly ? 'off' : 'error', message: errorText(error) });
+  } finally { modelLoading = false; }
+}

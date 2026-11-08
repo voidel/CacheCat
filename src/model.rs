@@ -6,11 +6,13 @@ use std::{
     fs::{self, File},
     io::{Read, Write},
     path::{Path, PathBuf},
+    sync::atomic::{AtomicBool, Ordering},
     time::Duration,
 };
 use tokenizers::{PaddingParams, PaddingStrategy, Tokenizer, TruncationParams};
 
 pub const MODEL_ID: &str = "siglip-base-patch16-224-q8-4649052-preprocess-v1";
+pub const MODEL_SOURCE: &str = "https://huggingface.co/Xenova/siglip-base-patch16-224/tree/4649052661e53c7000355844105f8a1792088239";
 const BASE: &str = "https://huggingface.co/Xenova/siglip-base-patch16-224/resolve/4649052661e53c7000355844105f8a1792088239";
 const FILES: &[(&str, &str, u64)] = &[
     (
@@ -38,58 +40,109 @@ pub fn ready(dir: &Path) -> bool {
 
 /// Downloads only public model assets; no cache data or queries leave the machine.
 pub fn download(dir: &Path, mut progress: impl FnMut(String)) -> Result<()> {
-    let client = reqwest::blocking::Client::builder()
-        .connect_timeout(Duration::from_secs(30))
-        .timeout(Duration::from_secs(900))
-        .build()?;
-    for &(name, hash, expected_size) in FILES {
-        let dest = dir.join(name);
-        if verify(&dest, hash, expected_size).is_ok() {
-            continue;
-        }
-        fs::create_dir_all(dest.parent().unwrap())?;
-        let partial = dest.with_extension("partial");
-        let result = (|| -> Result<()> {
-            let mut response = client
-                .get(format!("{BASE}/{name}"))
-                .send()?
-                .error_for_status()?;
-            let mut output = File::create(&partial)?;
-            let mut buffer = [0; 128 * 1024];
-            let mut total = 0_u64;
-            let mut last = 0_u64;
-            loop {
-                let n = response.read(&mut buffer)?;
-                if n == 0 {
-                    break;
-                }
-                total += n as u64;
-                ensure!(total <= expected_size, "Unexpected model file size");
-                output.write_all(&buffer[..n])?;
-                if total / 1_000_000 != last {
-                    last = total / 1_000_000;
-                    progress(format!(
-                        "Downloading {name}: {} / {} MB",
-                        last,
-                        expected_size / 1_000_000
-                    ));
-                }
-            }
-            output.sync_all()?;
-            drop(output);
-            verify(&partial, hash, expected_size)?;
-            if dest.exists() {
-                fs::remove_file(&dest)?;
-            }
-            fs::rename(&partial, &dest)?;
-            Ok(())
-        })();
-        if result.is_err() {
-            let _ = fs::remove_file(partial);
-        }
-        result?;
-    }
+    download_cancellable(dir, &AtomicBool::new(false), |done, total| {
+        progress(format!(
+            "Downloading model: {} / {} MB",
+            done / 1_000_000,
+            total / 1_000_000
+        ));
+    })?;
     Ok(())
+}
+struct PartialFile(PathBuf);
+impl Drop for PartialFile {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
+}
+/// Returns false on cancellation; completed verified files are kept.
+pub fn download_cancellable(
+    dir: &Path,
+    cancelled: &AtomicBool,
+    progress: impl FnMut(u64, u64),
+) -> Result<bool> {
+    download_from(dir, cancelled, progress, BASE, FILES)
+}
+fn download_from(
+    dir: &Path,
+    cancelled: &AtomicBool,
+    mut progress: impl FnMut(u64, u64),
+    base: &str,
+    files: &[(&str, &str, u64)],
+) -> Result<bool> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?
+        .block_on(async {
+            let transfer = async {
+                let total_size: u64 = files.iter().map(|f| f.2).sum();
+                let mut completed = 0;
+                progress(0, total_size);
+                let client = reqwest::Client::builder()
+                    .connect_timeout(Duration::from_secs(30))
+                    .timeout(Duration::from_secs(900))
+                    .build()?;
+                for &(name, hash, expected_size) in files {
+                    if cancelled.load(Ordering::Relaxed) {
+                        return Ok(false);
+                    }
+                    let dest = dir.join(name);
+                    if verify(&dest, hash, expected_size).is_ok() {
+                        completed += expected_size;
+                        progress(completed, total_size);
+                        continue;
+                    }
+                    fs::create_dir_all(dest.parent().unwrap())?;
+                    let partial = PartialFile(dest.with_extension("partial"));
+                    let result: Result<()> = async {
+                        let mut response = client
+                            .get(format!("{base}/{name}"))
+                            .send()
+                            .await?
+                            .error_for_status()?;
+                        let mut output = File::create(&partial.0)?;
+                        let mut total = 0_u64;
+                        let mut last = 0_u64;
+                        while let Some(bytes) = response.chunk().await? {
+                            ensure!(!cancelled.load(Ordering::Relaxed), "Download cancelled");
+                            total += bytes.len() as u64;
+                            ensure!(total <= expected_size, "Unexpected model file size");
+                            output.write_all(&bytes)?;
+                            if total / 100_000 != last {
+                                last = total / 100_000;
+                                progress(completed + total, total_size);
+                            }
+                        }
+                        output.sync_all()?;
+                        drop(output);
+                        verify(&partial.0, hash, expected_size)?;
+                        ensure!(!cancelled.load(Ordering::Relaxed), "Download cancelled");
+                        if dest.exists() {
+                            fs::remove_file(&dest)?;
+                        }
+                        fs::rename(&partial.0, &dest)?;
+                        Ok(())
+                    }
+                    .await;
+                    if cancelled.load(Ordering::Relaxed) {
+                        return Ok(false);
+                    }
+                    result?;
+                    completed += expected_size;
+                    progress(completed, total_size);
+                }
+                Ok(true)
+            };
+            tokio::select! {
+                biased;
+                _ = async {
+                    while !cancelled.load(Ordering::Relaxed) {
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                    }
+                } => Ok(false),
+                result = transfer => result,
+            }
+        })
 }
 
 fn verify(path: &Path, hash: &str, size: u64) -> Result<()> {
@@ -528,6 +581,76 @@ pub fn normalize(mut values: Vec<f32>) -> Result<Vec<f32>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn cancelled_download_removes_partial_and_retry_keeps_completed_files() {
+        use std::{net::TcpListener, sync::Arc, time::Instant};
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("complete"), b"saved").unwrap();
+        let saved_hash = format!("{:x}", Sha256::digest(b"saved"));
+        let bytes = vec![42_u8; 200_000];
+        let hash = format!("{:x}", Sha256::digest(&bytes));
+        let files = [
+            ("complete", saved_hash.as_str(), 5),
+            ("model", hash.as_str(), bytes.len() as u64),
+        ];
+        for cancel in [true, false] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let base = format!("http://{}", listener.local_addr().unwrap());
+            let body = bytes.clone();
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(3)))
+                    .unwrap();
+                let mut request = Vec::new();
+                let mut byte = [0];
+                while !request.ends_with(b"\r\n\r\n") {
+                    stream.read_exact(&mut byte).unwrap();
+                    request.push(byte[0]);
+                }
+                assert!(String::from_utf8_lossy(&request).starts_with("GET /model "));
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                )
+                .unwrap();
+                stream
+                    .write_all(if cancel { &body[..120_000] } else { &body })
+                    .unwrap();
+                if cancel {
+                    let _ = stream.read(&mut byte);
+                }
+            });
+            let cancelled = Arc::new(AtomicBool::new(false));
+            let started = Instant::now();
+            let mut progress = Vec::new();
+            let finished = download_from(
+                dir.path(),
+                &cancelled,
+                |done, total| {
+                    progress.push((done, total));
+                    if cancel && done > 100_000 {
+                        cancelled.store(true, Ordering::Relaxed);
+                    }
+                },
+                &base,
+                &files,
+            )
+            .unwrap();
+            assert_eq!(finished, !cancel);
+            assert!(!dir.path().join("model.partial").exists());
+            assert_eq!(fs::read(dir.path().join("complete")).unwrap(), b"saved");
+            if cancel {
+                assert!(started.elapsed() < Duration::from_secs(2));
+                assert!(!dir.path().join("model").exists());
+            } else {
+                assert_eq!(fs::read(dir.path().join("model")).unwrap(), bytes);
+                assert_eq!(progress.last(), Some(&(200_005, 200_005)));
+            }
+            server.join().unwrap();
+        }
+    }
     #[test]
     fn inference_frames_preserve_pixels_and_reject_invalid_lengths() {
         let pixels: Vec<f32> = (0..IMAGE_FLOATS)

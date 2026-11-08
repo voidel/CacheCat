@@ -215,8 +215,7 @@ impl Render for CacheCat {
             .filter(|i| i.error.is_some() && !i.indexed)
             .count();
         let pending = self.items.len().saturating_sub(indexed + unavailable);
-        let semantic =
-            !self.query.trim().is_empty() && cachecat::index::uuid_query(&self.query).is_none();
+        let semantic = !self.query.trim().is_empty() && self.mode == SearchMode::Semantic;
         let folder = self
             .settings
             .cache
@@ -272,47 +271,6 @@ impl Render for CacheCat {
                 )),
             )
             .child(div().flex_1().min_h(px(20.)));
-        if !self.model_ready {
-            sidebar = sidebar.child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_2()
-                    .flex_shrink_0()
-                    .child(
-                        div()
-                            .text_sm()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child("Semantic search"),
-                    )
-                    .child(
-                        sidebar_button(
-                            "model",
-                            if self.downloading {
-                                "Downloading…"
-                            } else {
-                                "Enable search"
-                            },
-                            Icon::Search,
-                            p,
-                        )
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            if !this.downloading {
-                                this.downloading = true;
-                                this.error = None;
-                                let _ = this.worker.commands.send(Command::Download);
-                                cx.notify();
-                            }
-                        })),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(rgb(p.muted))
-                            .child("Model download: 213 MB"),
-                    ),
-            );
-        }
         sidebar = sidebar
             .child(
                 sidebar_button(
@@ -360,7 +318,25 @@ impl Render for CacheCat {
                     .font_weight(FontWeight::SEMIBOLD)
                     .child("Texture library"),
             )
-            .child(Input::new(&self.search).h(px(44.)))
+            .child(
+                div()
+                    .flex()
+                    .gap_2()
+                    .items_center()
+                    .flex_shrink_0()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .child(Input::new(&self.search).h(px(44.))),
+                    )
+                    .child(
+                        div()
+                            .w(px(135.))
+                            .flex_shrink_0()
+                            .child(Select::new(&self.mode_select)),
+                    ),
+            )
             .child(
                 div()
                     .flex()
@@ -394,7 +370,7 @@ impl Render for CacheCat {
                     ))),
             );
         }
-        if semantic && pending > 0 {
+        if semantic && self.model_ready && pending > 0 {
             main = main.child(div().w_full().px_3().py_2().rounded_md().bg(rgb(p.card)).text_sm().text_color(rgb(p.accent))
                 .child("Indexing is not complete yet — results may be partial. New matches appear as textures are indexed."));
         }
@@ -402,7 +378,7 @@ impl Render for CacheCat {
             let message = if self.items.is_empty() {
                 "Open a texture cache"
             } else if semantic && !self.model_ready {
-                "Enable semantic search to search descriptions"
+                "Download the model to search descriptions"
             } else if semantic && indexed == 0 {
                 "Results will appear as textures are indexed"
             } else {
@@ -570,7 +546,7 @@ impl Render for CacheCat {
                 .child(self.resize_handle(false, p, cx))
                 .child(self.details_panel(right, p, cx));
         }
-        layout
+        layout.children(Root::render_dialog_layer(window, cx))
     }
 }
 

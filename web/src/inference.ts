@@ -1,7 +1,6 @@
 import { AutoTokenizer, AutoProcessor, SiglipTextModel, SiglipVisionModel, RawImage, env } from '@huggingface/transformers';
 import { normalize } from './cache';
-const REPO = 'Xenova/siglip-base-patch16-224';
-const REVISION = '4649052661e53c7000355844105f8a1792088239';
+import { REPO, REVISION, MODEL_FILES } from './model-assets';
 env.allowLocalModels = false;
 env.useBrowserCache = true;
 env.backends.onnx.wasm!.numThreads = 1;
@@ -12,17 +11,34 @@ export class Inference {
   private vision: any;
   private textModel: any;
   backend = 'CPU';
+  private cachedOnly = false;
+  private report: (p: any) => void = () => {};
   private async sessions(device: 'webgpu' | 'wasm', progress: (message: string) => void) {
-    const options = { revision: REVISION, dtype: 'q8' as const, device, progress_callback: (p: any) => { if (p.status === 'progress') progress(`Downloading ${p.file}: ${Math.round(p.progress)}%`); } };
+    const options = { revision: REVISION, dtype: 'q8' as const, device, local_files_only: this.cachedOnly, progress_callback: this.report };
     this.vision = await SiglipVisionModel.from_pretrained(REPO, options);
     try { this.textModel = await SiglipTextModel.from_pretrained(REPO, options); }
     catch (error) { await this.vision.dispose(); this.vision = undefined; throw error; }
     this.backend = device === 'webgpu' ? 'WebGPU' : 'CPU · WebAssembly';
   }
-  async load(progress: (message: string) => void): Promise<void> {
+  async load(progress: (message: string, done?: number, total?: number) => void, cachedOnly = false): Promise<void> {
+    this.cachedOnly = cachedOnly;
+    // Transformers.js requires local models enabled for cache-only loads.
+    // Remote downloads stay disabled until the user confirms the dialog.
+    env.allowLocalModels = cachedOnly;
+    env.allowRemoteModels = !cachedOnly;
+    const received = new Map<string, number>();
+    const total = Object.values(MODEL_FILES).reduce((a, b) => a + b, 0);
+    this.report = (p: any) => {
+      const size = MODEL_FILES[p.file as keyof typeof MODEL_FILES];
+      if (!size) return;
+      if (p.status === 'done') received.set(p.file, size);
+      else if (p.status === 'progress') received.set(p.file, Math.max(received.get(p.file) ?? 0, Math.min(size, p.loaded ?? size * p.progress / 100)));
+      progress('Downloading model…', [...received.values()].reduce((a, b) => a + b, 0), total);
+    };
+    const options = { revision: REVISION, local_files_only: cachedOnly, progress_callback: this.report };
     progress('Loading local SigLIP…');
-    this.tokenizer = await AutoTokenizer.from_pretrained(REPO, { revision: REVISION });
-    this.processor = await AutoProcessor.from_pretrained(REPO, { revision: REVISION });
+    this.tokenizer = await AutoTokenizer.from_pretrained(REPO, options);
+    this.processor = await AutoProcessor.from_pretrained(REPO, options);
     try {
       if (!('gpu' in navigator)) throw new Error('WebGPU unavailable');
       await this.sessions('webgpu', progress);

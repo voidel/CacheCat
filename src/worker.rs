@@ -7,7 +7,11 @@ use anyhow::Result;
 use std::{
     collections::{HashMap, VecDeque},
     path::PathBuf,
-    sync::mpsc::{self, Receiver, Sender},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc::{self, Receiver, Sender},
+    },
     time::Duration,
 };
 
@@ -19,20 +23,37 @@ pub struct Item {
     pub error: Option<String>,
     pub indexed: bool,
 }
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SearchMode {
+    #[default]
+    Semantic,
+    Uuid,
+}
+impl SearchMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Semantic => "Semantic",
+            Self::Uuid => "UUID",
+        }
+    }
+}
 pub enum Command {
     Open(u64, PathBuf),
-    Search(u64, String),
-    Download,
+    Search(u64, String, SearchMode),
+    Download(Arc<AtomicBool>),
     Pause(bool),
 }
 pub enum Event {
     Loaded(u64, Vec<Item>),
     Item(u64, usize, Item),
-    Results(u64, String, Vec<usize>),
+    Results(u64, String, SearchMode, Vec<usize>),
     Status(String),
     Backend(String),
     Error(String),
     ModelReady(bool),
+    DownloadProgress(u64, u64),
+    DownloadFailed(String),
+    DownloadCancelled,
 }
 pub struct Worker {
     pub commands: Sender<Command>,
@@ -64,6 +85,7 @@ impl Worker {
         }
     }
 }
+#[derive(Default)]
 struct State {
     generation: u64,
     cache: Option<Cache>,
@@ -74,13 +96,15 @@ struct State {
     embed: VecDeque<usize>,
     prepared: HashMap<usize, Vec<f32>>,
     query: String,
+    mode: SearchMode,
     query_vector: Option<Vec<f32>>,
     paused: bool,
 }
 impl State {
     fn results(&self, tx: &Sender<Event>) {
         let mut results: Vec<usize> = (0..self.items.len()).collect();
-        if let Some(uuid) = index::uuid_query(&self.query) {
+        if self.mode == SearchMode::Uuid {
+            let uuid = self.query.trim().to_lowercase().replace('-', "");
             results.retain(|&i| {
                 self.items[i]
                     .texture
@@ -96,7 +120,12 @@ impl State {
                 results.clear();
             }
         }
-        let _ = tx.send(Event::Results(self.generation, self.query.clone(), results));
+        let _ = tx.send(Event::Results(
+            self.generation,
+            self.query.clone(),
+            self.mode,
+            results,
+        ));
     }
 }
 fn run(data: PathBuf, cpu: bool, rx: Receiver<Command>, tx: &Sender<Event>) -> Result<()> {
@@ -114,13 +143,39 @@ fn run(data: PathBuf, cpu: bool, rx: Receiver<Command>, tx: &Sender<Event>) -> R
         embed: VecDeque::new(),
         prepared: HashMap::new(),
         query: String::new(),
+        mode: SearchMode::Semantic,
         query_vector: None,
         paused: false,
     };
     let mut load_model = model::ready(&model_dir);
+    let mut load_cancel: Option<Arc<AtomicBool>> = None;
     let mut since_embedding = 0_usize;
     let _ = tx.send(Event::ModelReady(load_model));
+    let mut download: Option<(Receiver<Result<bool>>, Arc<AtomicBool>)> = None;
     loop {
+        if let Some((rx, cancelled)) = &download
+            && let Ok(result) = rx.try_recv()
+        {
+            match result {
+                Ok(true) if !cancelled.load(Ordering::Relaxed) => {
+                    load_model = true;
+                    load_cancel = Some(cancelled.clone());
+                    state.paused = false;
+                }
+                Ok(_) => {
+                    let _ = tx.send(Event::DownloadCancelled);
+                }
+                Err(_) if cancelled.load(Ordering::Relaxed) => {
+                    let _ = tx.send(Event::DownloadCancelled);
+                }
+                Err(e) => {
+                    let _ = tx.send(Event::DownloadFailed(format!(
+                        "Model download failed: {e:#}"
+                    )));
+                }
+            }
+            download = None;
+        }
         let pending = !state.paused
             && (!state.decode.is_empty() || model.is_some() && !state.embed.is_empty());
         let command = match rx.recv_timeout(if pending || load_model {
@@ -129,7 +184,12 @@ fn run(data: PathBuf, cpu: bool, rx: Receiver<Command>, tx: &Sender<Event>) -> R
             Duration::from_millis(150)
         }) {
             Ok(c) => Some(c),
-            Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(()),
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                if let Some((_, cancelled)) = &download {
+                    cancelled.store(true, Ordering::Relaxed);
+                }
+                return Ok(());
+            }
             Err(_) => None,
         };
         if let Some(command) = command {
@@ -171,14 +231,15 @@ fn run(data: PathBuf, cpu: bool, rx: Receiver<Command>, tx: &Sender<Event>) -> R
                     }
                 }
                 Command::Pause(paused) => state.paused = paused,
-                Command::Search(generation, query) => {
+                Command::Search(generation, query, mode) => {
                     if generation != state.generation {
                         continue;
                     }
                     state.query = query;
+                    state.mode = mode;
                     state.query_vector = None;
                     if !state.query.trim().is_empty()
-                        && index::uuid_query(&state.query).is_none()
+                        && state.mode == SearchMode::Semantic
                         && let Some(model) = model.as_mut()
                     {
                         match model.text(&state.query) {
@@ -190,15 +251,20 @@ fn run(data: PathBuf, cpu: bool, rx: Receiver<Command>, tx: &Sender<Event>) -> R
                     }
                     state.results(tx);
                 }
-                Command::Download => {
-                    match model::download(&model_dir, |s| {
-                        let _ = tx.send(Event::Status(s));
-                    }) {
-                        Ok(()) => load_model = true,
-                        Err(e) => {
-                            let _ = tx.send(Event::Error(format!("Model download failed: {e:#}")));
-                            let _ = tx.send(Event::ModelReady(false));
-                        }
+                Command::Download(cancelled) => {
+                    if download.is_none() {
+                        let (done_tx, done_rx) = mpsc::channel();
+                        let events = tx.clone();
+                        let dir = model_dir.clone();
+                        let cancel = cancelled.clone();
+                        std::thread::spawn(move || {
+                            let result =
+                                model::download_cancellable(&dir, &cancel, |done, total| {
+                                    let _ = events.send(Event::DownloadProgress(done, total));
+                                });
+                            let _ = done_tx.send(result);
+                        });
+                        download = Some((done_rx, cancelled));
                     }
                 }
             }
@@ -255,10 +321,25 @@ fn run(data: PathBuf, cpu: bool, rx: Receiver<Command>, tx: &Sender<Event>) -> R
         }
         if load_model {
             load_model = false;
+            if load_cancel
+                .as_ref()
+                .is_some_and(|c| c.load(Ordering::Relaxed))
+            {
+                load_cancel = None;
+                let _ = tx.send(Event::DownloadCancelled);
+                continue;
+            }
             let _ = tx.send(Event::Status("Loading SigLIP…".into()));
             match Model::load(&model_dir, cpu) {
                 Ok(mut m) => {
-                    if !state.query.trim().is_empty() && index::uuid_query(&state.query).is_none() {
+                    if load_cancel
+                        .take()
+                        .is_some_and(|c| c.load(Ordering::Relaxed))
+                    {
+                        let _ = tx.send(Event::DownloadCancelled);
+                        continue;
+                    }
+                    if !state.query.trim().is_empty() && state.mode == SearchMode::Semantic {
                         state.query_vector = m.text(&state.query).ok();
                     }
                     let _ = tx.send(Event::Status("Indexing textures…".into()));
@@ -320,5 +401,45 @@ fn run(data: PathBuf, cpu: bool, rx: Receiver<Command>, tx: &Sender<Event>) -> R
                 let _ = tx.send(Event::Backend(model.backend.clone()));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn search_mode_is_explicit_and_results_include_it() {
+        let cache = Cache::open(std::path::Path::new("web/tests/fixtures/texturecache")).unwrap();
+        let items = cache
+            .textures
+            .into_iter()
+            .map(|texture| Item {
+                texture,
+                thumbnail: None,
+                dimensions: None,
+                error: None,
+                indexed: false,
+            })
+            .collect();
+        let mut state = State {
+            items,
+            query: "00000000".into(),
+            ..Default::default()
+        };
+        let (tx, rx) = mpsc::channel();
+        state.results(&tx);
+        assert!(
+            matches!(rx.recv().unwrap(), Event::Results(_, _, SearchMode::Semantic, hits) if hits.is_empty())
+        );
+        state.mode = SearchMode::Uuid;
+        state.results(&tx);
+        assert!(
+            matches!(rx.recv().unwrap(), Event::Results(_, _, SearchMode::Uuid, hits) if hits.len() == 4)
+        );
+        state.query = "not-a-uuid".into();
+        state.results(&tx);
+        assert!(
+            matches!(rx.recv().unwrap(), Event::Results(_, _, SearchMode::Uuid, hits) if hits.is_empty())
+        );
     }
 }
