@@ -15,8 +15,7 @@ cargo run --release
 
 `--cache PATH` selects a viewer cache. `--data-dir PATH` overrides portable storage; `--cpu` forces CPU inference. Linux CUDA builds use `--features cuda` and require matching CUDA/cuDNN libraries.
 
-Use the cache location shown in the viewer's settings. It varies by platform and
-can be changed by the user; examples should not assume a particular drive or folder.
+Use the cache location shown in your viewer's settings.
 
 ## Checks
 
@@ -29,7 +28,7 @@ cargo run -- --cache tests/fixtures/texturecache --inspect 4
 
 `tools/make-fixtures.py` regenerates the synthetic JPEG 2000 fixture with Pillow.
 
-Native real-model smoke test:
+Test semantic search with the synthetic textures:
 
 ```sh
 cargo run -- --data-dir .local/data --download-model
@@ -38,9 +37,10 @@ cargo run -- --cache tests/fixtures/texturecache --data-dir .local/data --inspec
 
 ## Releases
 
-GitHub Actions tests and builds Windows x64, macOS Apple silicon/Intel and Linux x64. Push a `v*` tag to assemble platform archives and SHA-256
+GitHub Actions tests and builds Windows x64, macOS Apple silicon/Intel and Linux x64.
+Push a `v*` tag to assemble platform archives and SHA-256
 checksums into a **draft** GitHub release. Review artifacts before publishing.
-No model files or user caches are included. No production deployment is performed by CI.
+No model files or user caches are included.
 
 Archives contain the application, required runtime libraries, platform launchers
 and licence notices. The README and developer documentation remain in this repository.

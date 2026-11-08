@@ -19,5 +19,3 @@ storage without deleting the original. Explicit `--data-dir` overrides skip impo
 Model downloads are approximately 213 MB. Cache contents stay local. Viewer caches
 can contain incomplete files, which are reported separately. GPU availability and
 operator support vary; CPU fallback is always provided. Search is available while indexing continues, with a notice when results are partial.
-
-Maintainer: publish this draft only after reviewing platform smoke tests and artifacts.

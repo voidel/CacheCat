@@ -51,8 +51,7 @@ With Rust and the [platform prerequisites](docs/development.md#desktop) installe
 cargo run --release
 ```
 
-See the [development guide](docs/development.md) for tests and releases,
-and [architecture notes](docs/architecture.md) for technical details.
+See the [development guide](docs/development.md) for tests and releases.
 
 ## License
 
