@@ -190,11 +190,16 @@ fn session(path: &Path, gpu: bool) -> Result<Session> {
         .with_config_entry("session.intra_op.allow_spinning", "0")?;
     #[cfg(target_os = "windows")]
     let builder = if gpu {
-        builder.with_execution_providers([
-            ort::execution_providers::DirectMLExecutionProvider::default()
-                .build()
-                .error_on_failure(),
-        ])?
+        // Extended graph optimizations crash the bundled DirectML runtime while
+        // loading the quantized SigLIP models. Basic optimizations retain GPU
+        // execution and work for both the vision and text graphs.
+        builder
+            .with_optimization_level(ort::session::builder::GraphOptimizationLevel::Level1)?
+            .with_execution_providers([
+                ort::execution_providers::DirectMLExecutionProvider::default()
+                    .build()
+                    .error_on_failure(),
+            ])?
     } else {
         builder
     };
