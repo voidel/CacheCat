@@ -1,5 +1,5 @@
 // Explicit opt-in, read-only sample of a real cache. Never publishes or commits samples.
-// Run from repository root: node tools/browser-real-cache-smoke.mjs R:/FirestormCache
+// Run from repository root: node tools/browser-real-cache-smoke.mjs "<viewer-cache-folder>"
 import { createRequire } from 'node:module';
 import { readFile, writeFile, mkdir, copyFile } from 'node:fs/promises';
 import { resolve, join } from 'node:path';

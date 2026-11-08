@@ -15,6 +15,9 @@ cargo run --release
 
 `--cache PATH` selects a viewer cache. `--data-dir PATH` overrides portable storage; `--cpu` forces CPU inference. Linux CUDA builds use `--features cuda` and require matching CUDA/cuDNN libraries.
 
+Use the cache location shown in the viewer's settings. It varies by platform and
+can be changed by the user; examples should not assume a particular drive or folder.
+
 ## Browser
 
 ```sh

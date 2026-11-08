@@ -592,7 +592,8 @@ mod tests {
     #[::core::prelude::v1::test]
     fn existing_settings_keep_theme_and_gain_panel_defaults() {
         let settings: Settings =
-            serde_json::from_str(r#"{"cache":"R:\\FirestormCache","appearance":"Dark"}"#).unwrap();
+            serde_json::from_str(r#"{"cache":"custom-cache-folder","appearance":"Dark"}"#).unwrap();
+        assert_eq!(settings.cache, Some(PathBuf::from("custom-cache-folder")));
         assert!(settings.appearance == Appearance::Dark);
         assert_eq!(settings.sidebar_width, 232.);
         assert_eq!(settings.details_width, 320.);

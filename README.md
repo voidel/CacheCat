@@ -16,7 +16,7 @@ Textures and searches stay on your device.
 ## Getting started
 
 1. Download an available build from [GitHub Releases](https://github.com/voidel/CacheCat/releases), or build from source below.
-2. Open your Firestorm or Second Life cache folder.
+2. Open the cache folder shown in your viewer’s settings, or its `texturecache` subfolder.
 3. Enable semantic search to download the model once (about 213 MB).
 
 CacheCat reads your cache without changing it. Incomplete cache entries may be unavailable.
