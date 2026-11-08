@@ -576,9 +576,12 @@ impl CacheCat {
                 .text_sm()
                 .child(
                     if self.previews.get(i).is_some_and(|image| image.is_err()) {
-                        "Preview unavailable"
+                        Icon::Close
+                            .element(p.preview_error)
+                            .size(px(28.))
+                            .into_any_element()
                     } else {
-                        "Loading…"
+                        div().child("Loading…").into_any_element()
                     },
                 )
                 .into_any_element()

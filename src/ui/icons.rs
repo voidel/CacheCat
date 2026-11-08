@@ -17,6 +17,7 @@ pub enum Icon {
     Sort,
     ZoomOut,
     ZoomIn,
+    Close,
 }
 
 impl Icon {
@@ -35,6 +36,7 @@ impl Icon {
             Self::Sort => "sort",
             Self::ZoomOut => "zoom-out",
             Self::ZoomIn => "zoom-in",
+            Self::Close => "close",
         }
     }
 
