@@ -1,41 +1,23 @@
 # Verification record
 
-Search setup update, 2026-11-08:
+## Desktop-only scope — 2026-11-08
 
-- Explicit Semantic/UUID modes and the model download dialog are implemented in
-  desktop and browser. The pinned model and existing embedding keys are unchanged.
+CacheCat now ships only the native application. The browser source, browser tests,
+static-site packaging and browser CI job have been removed. Native synthetic test
+fixtures now live under `tests/fixtures/texturecache`. The pom.zone feature and
+download page is maintained in that site's repository. All 16 native tests passed
+again on Windows and in the isolated Linux Docker build after moving the fixtures;
+Windows formatting and strict Clippy checks passed.
+
+## Search setup — 2026-11-08
+
+- Semantic/UUID modes and the model download dialog use the same pinned model and
+  embedding keys as before.
 - Windows and isolated Linux builds passed all 16 native tests. Cancellation was
   tested against a stalled local HTTP transfer: partial files were removed and a
   retry reused completed verified files. Strict Windows Clippy passed.
-- All eight headless browser tests passed, including failure/retry, cancellation,
-  progress, automatic dialog closure, real WebGPU ranking and partial results.
-  Cached model reuse and search passed with remote model downloads blocked.
-- Browser modal layouts were inspected at desktop and 360px widths in light/dark
-  themes. Native modal interaction was not visually exercised on the active desktop.
-- The rebuilt portable Windows archive correctly ranked all four synthetic
-  textures using the existing model on CPU. The pom.zone browser source was synced;
-  no website deployment or public release was performed.
-
-Local checks, 2026-11-08:
-
-- Windows: `cargo check`, five Rust unit tests, and strict Clippy passed.
-- Optimized Windows release archive built successfully. The packaged executable
-  decoded all four synthetic textures and correctly ranked red stripes, recovering
-  from GPU startup failure on CPU with exit code 0 and no interactive window.
-- Linux: isolated Debian container `cargo check --locked` and all five Rust unit tests passed.
-- Read-only scan of the supplied Firestorm 1.71 cache found 21,401 live entries.
-  The first 100 entries yielded 88 decoded textures and 12 unavailable entries.
-- Native real-model smoke test: all four synthetic textures decoded, and a query
-  for red stripes ranked the generated red-striped texture first. DirectML startup
-  failed on the test machine; isolated-process recovery completed inference on CPU.
-- Browser: five parser/embedding tests and five headless end-to-end tests passed.
-  End-to-end tests include real WebGPU SigLIP inference, correct synthetic ranking,
-  partial results before indexing completion, index reuse after reload, themes,
-  UUID filtering, details, directory-picker recovery, and narrow-screen layouts.
-- Browser read-only sample from the real cache: 16 entries loaded, 13 visible
-  previews decoded, no application error, **zero external requests** while browsing.
-- Static site/container build passed. All model runtime modules are served with the
-  correct MIME types; write methods and paths outside `/cachecat/` are denied.
+- The portable Windows archive correctly ranked all four synthetic textures on CPU.
+- Native modal interaction was not visually exercised on the active desktop.
 
 Synthetic fixtures are committed; real cache samples, models and screenshots are
 kept under ignored `.local/`. No real cache data is included in source or release

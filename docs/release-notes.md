@@ -1,7 +1,6 @@
 CacheCat is a local-first Second Life / Firestorm texture-cache explorer.
 
 - Native Rust/GPUI viewer for Windows, macOS, and Linux.
-- Browser viewer with local JPEG 2000 decoding, SigLIP inference, and saved embeddings.
 - Newest-first texture grid, UUID filtering, description search, and system-aware themes.
 - Embedding progress with immediate search over completed items and partial-result notices.
 - Isolated native inference process with CPU recovery when an accelerator fails.
@@ -16,13 +15,8 @@ This is a portable application. Its `data` folder lives beside the executable
 application. First launch copies an existing profile-based index into portable
 storage without deleting the original. Explicit `--data-dir` overrides skip import.
 
-The browser archive is a static website intended for `/cachecat/`. It includes the
-feature page and viewer. Serve it over HTTPS with the supplied nginx configuration.
-It does not include model weights or any cache data.
-
 Model downloads are approximately 213 MB. Cache contents stay local. Viewer caches
 can contain incomplete files, which are reported separately. GPU availability and
-operator support vary; CPU fallback is always provided. Initial indexing takes time;
-keep the browser tab open until it finishes.
+operator support vary; CPU fallback is always provided. Search is available while indexing continues, with a notice when results are partial.
 
 Maintainer: publish this draft only after reviewing platform smoke tests and artifacts.

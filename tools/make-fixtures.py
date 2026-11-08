@@ -5,7 +5,7 @@ import io
 import struct
 import uuid
 
-root = Path(__file__).resolve().parents[1] / "web/tests/fixtures/texturecache"
+root = Path(__file__).resolve().parents[1] / "tests/fixtures/texturecache"
 root.mkdir(parents=True, exist_ok=True)
 entries = bytearray(struct.pack("<fI32sI", 1.71, 64, b"OpenJPEG synthetic fixture", 4))
 headers = bytearray()

@@ -2,7 +2,7 @@
 
 A better Second Life Cache Viewer. Lightweight and dependable with semantic image search.
 
-A Rust + GPUI desktop app for Windows, macOS and Linux, with a browser version.
+A portable Rust + GPUI desktop app for Windows, macOS and Linux.
 Textures and searches stay on your device.
 
 ## Features
@@ -10,7 +10,7 @@ Textures and searches stay on your device.
 - Browse cached textures and filter by UUID.
 - Search colours, shapes and materials with local SigLIP indexing.
 - Search while indexing continues, with progress and partial results shown.
-- Sort textures, copy UUIDs, and export PNG or TGA on desktop.
+- Sort textures, copy UUIDs, and export PNG or TGA.
 - Light and dark themes, with system preference support.
 
 ## Getting started
@@ -23,7 +23,7 @@ CacheCat reads your cache without changing it. Incomplete cache entries may be u
 
 The desktop app is portable: its index, models, thumbnails and settings live in `data/`
 beside the executable (beside `CacheCat.app` on macOS). Keep this folder when moving or
-updating the app. The browser version stores its data in browser storage.
+updating the app.
 
 ## Build
 
@@ -33,7 +33,7 @@ With Rust and the [platform prerequisites](docs/development.md#desktop) installe
 cargo run --release
 ```
 
-See the [development guide](docs/development.md) for browser setup, tests and releases,
+See the [development guide](docs/development.md) for tests and releases,
 and [architecture notes](docs/architecture.md) for technical details.
 
 ## License

@@ -67,33 +67,6 @@ model key invalidates embeddings when preprocessing or weights change. A changed
 texture between preview and indexing is reported for rescan. Model downloads use
 a fixed repository revision, exact file sizes and SHA-256 verification before rename.
 
-## Browser
-
-The main thread owns accessible DOM controls and a virtualized texture grid.
-A worker receives read-only directory handles or selected File objects. It uses
-`Blob.slice()` for header slots and the required body files, decodes with OpenJPEG
-WebAssembly, and runs SigLIP through Transformers.js/ONNX Runtime Web. WebGPU is
-probed using both models; unsupported execution falls back to WASM CPU.
-
-Thumbnails and embeddings live in IndexedDB, keyed by texture-content hash and
-model/preprocessing identity. The UI keeps a bounded LRU of object URLs for visible
-thumbnails. Browser Cache Storage holds model assets. Storage can be evicted by the
-browser; quota errors are surfaced, with a bounded in-memory preview fallback.
-
-The browser uses the same search/download flow. Fully cached model assets are
-loaded without remote downloads. Cancelling setup terminates the worker to abort
-fetches, then restores the selected cache and saved embeddings in a fresh worker.
-
-Search commands never become URLs. UUID searches operate on the catalogue directly;
-text queries produce local normalized embeddings. Cosine similarity ranks the
-currently indexed subset. The UI shows indexed/total, pending, unavailable and
-partial-result state. A latest-query check rejects stale results.
-
-Only application/runtime/public-model downloads use the network. There is no
-upload API or telemetry. The static host denies write methods; CSP limits worker,
-script and connection origins. No source cache directory is mounted into a server.
-The browser only sees a selected folder after the user chooses it.
-
 ## Scope and current limitations
 
 - Recency means viewer last-use time, not texture creation or download time.
@@ -106,6 +79,5 @@ The browser only sees a selected folder after the user chooses it.
   indexing commands resume.
 - GPU operator coverage depends on the runtime and driver. Native Linux CUDA is
   an optional build; the portable Linux build uses CPU inference.
-- Browser persistence is subject to quotas/eviction. Background tabs can be suspended.
 - Native release archives are unsigned/ad-hoc signed until a maintainer supplies
   platform signing and notarization credentials. CI produces reviewable draft releases.

@@ -128,7 +128,7 @@ mod tests {
     use super::*;
     #[test]
     fn export_reads_original_cache_and_rejects_missing_assets() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("web/tests/fixtures/texturecache");
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/texturecache");
         let temp = tempfile::tempdir().unwrap();
         for format in [ExportFormat::Png, ExportFormat::Tga] {
             let destination = temp.path().join(format.extension());

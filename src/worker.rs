@@ -409,7 +409,7 @@ mod tests {
     use super::*;
     #[test]
     fn search_mode_is_explicit_and_results_include_it() {
-        let cache = Cache::open(std::path::Path::new("web/tests/fixtures/texturecache")).unwrap();
+        let cache = Cache::open(std::path::Path::new("tests/fixtures/texturecache")).unwrap();
         let items = cache
             .textures
             .into_iter()

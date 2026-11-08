@@ -3,8 +3,3 @@
 /dist/
 /data/
 *.log
-/web/node_modules/
-/web/dist/
-/web/public/runtime/
-/web/test-results/
-/web/playwright-report/
