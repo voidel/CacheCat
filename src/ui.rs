@@ -617,7 +617,7 @@ fn sidebar_button(id: &'static str, label: &'static str, icon: Icon, p: Palette)
         .text_sm()
         .cursor_pointer()
         .hover(move |s| s.bg(rgb(p.card)))
-        .child(icon.element().text_color(rgb(p.muted)))
+        .child(icon.element(p.muted))
         .child(div().flex_1().min_w_0().truncate().child(label))
 }
 

@@ -233,7 +233,7 @@ impl Render for CacheCat {
                     .flex()
                     .items_center()
                     .gap_2()
-                    .child(Icon::Cat.element().size(px(32.)).text_color(rgb(p.accent)))
+                    .child(Icon::Cat.element(p.accent).size(px(32.)))
                     .child(
                         div()
                             .text_xl()
@@ -299,7 +299,7 @@ impl Render for CacheCat {
                             .gap_2()
                             .text_sm()
                             .text_color(rgb(p.muted))
-                            .child(Icon::Processor.element())
+                            .child(Icon::Processor.element(p.muted))
                             .child("Indexing device"),
                     )
                     .child(
@@ -365,7 +365,16 @@ impl Render for CacheCat {
                     .flex_col()
                     .gap_2()
                     .flex_shrink_0()
-                    .child(div().text_sm().text_color(rgb(p.muted)).child("Theme"))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .text_sm()
+                            .text_color(rgb(p.muted))
+                            .child(Icon::Monitor.element(p.muted))
+                            .child("Theme"),
+                    )
                     .child(
                         div()
                             .w_full()

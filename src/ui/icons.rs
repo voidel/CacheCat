@@ -1,4 +1,4 @@
-use gpui::{AssetSource, SharedString, Styled, Svg, px, svg};
+use gpui::{AssetSource, SharedString, Styled, Svg, px, rgb, svg};
 use std::borrow::Cow;
 
 /// Small monochrome SVGs embedded in the executable, independent of system fonts.
@@ -12,6 +12,7 @@ pub enum Icon {
     Pause,
     Play,
     Processor,
+    Monitor,
 }
 
 impl Icon {
@@ -25,12 +26,16 @@ impl Icon {
             Self::Pause => "pause",
             Self::Play => "play",
             Self::Processor => "processor",
+            Self::Monitor => "monitor",
         }
     }
 
-    pub fn element(self) -> Svg {
+    pub fn element(self, color: u32) -> Svg {
         svg()
             .path(format!("cachecat/icons/{}", self.name()))
+            // Raw GPUI SVGs require their own colour to paint; parent text
+            // colour alone leaves the icon blank.
+            .text_color(rgb(color))
             .size(px(18.))
             .flex_shrink_0()
     }
