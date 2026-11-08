@@ -8,6 +8,7 @@ use gpui_component::{
     input::{Input, InputEvent, InputState},
     menu::{DropdownMenu, PopupMenuItem},
     select::{Select, SelectEvent, SelectState},
+    slider::{Slider, SliderEvent, SliderState},
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -27,6 +28,10 @@ mod previews;
 mod theme;
 use icons::Icon;
 use theme::Palette;
+
+const TILE_MIN: f32 = 96.;
+const TILE_MAX: f32 = 256.;
+const TILE_DEFAULT: f32 = 192.;
 
 #[derive(Default, Clone, Copy, Serialize, Deserialize, PartialEq)]
 enum Appearance {
@@ -53,6 +58,7 @@ struct Settings {
     sidebar_width: f32,
     details_width: f32,
     indexing_mode: IndexingMode,
+    tile_size: f32,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -63,6 +69,7 @@ impl Default for Settings {
             sidebar_width: 232.,
             details_width: 320.,
             indexing_mode: IndexingMode::default(),
+            tile_size: TILE_DEFAULT,
         }
     }
 }
@@ -80,6 +87,9 @@ struct CacheCat {
     download_state: Rc<RefCell<download::DownloadState>>,
     theme_select: Entity<SelectState<Vec<SharedString>>>,
     sort_select: Entity<SelectState<Vec<SharedString>>>,
+    tile_zoom: Entity<SliderState>,
+    zoom_anchor: Option<usize>,
+    zoom_changed: Option<Instant>,
     items: Vec<Item>,
     matches: Vec<usize>,
     visible: Vec<usize>,
@@ -122,6 +132,7 @@ impl CacheCat {
             .ok()
             .and_then(|b| serde_json::from_slice(&b).ok())
             .unwrap_or_default();
+        settings.tile_size = settings.tile_size.clamp(TILE_MIN, TILE_MAX);
         if path.is_some() {
             settings.cache = path;
         }
@@ -163,7 +174,22 @@ impl CacheCat {
             state.set_selected_value(&SharedString::from(settings.sort.label()), window, cx);
             state
         });
+        let tile_zoom = cx.new(|_| {
+            SliderState::new()
+                .min(TILE_MIN)
+                .max(TILE_MAX)
+                .step(8.)
+                .default_value(settings.tile_size)
+        });
         let subscriptions = vec![
+            cx.subscribe_in(&tile_zoom, window, |this, _, event, _, cx| {
+                let SliderEvent::Change(value) = event;
+                this.zoom_anchor
+                    .get_or_insert(this.preview_range.start * this.columns);
+                this.settings.tile_size = value.start().clamp(TILE_MIN, TILE_MAX);
+                this.zoom_changed = Some(Instant::now());
+                cx.notify();
+            }),
             cx.subscribe_in(&mode_select, window, |this, _, event, window, cx| {
                 if let SelectEvent::Confirm(Some(value)) = event {
                     this.mode = if value.as_ref() == "UUID" {
@@ -245,6 +271,9 @@ impl CacheCat {
             download_state: Rc::new(RefCell::new(download::DownloadState::default())),
             theme_select,
             sort_select,
+            tile_zoom,
+            zoom_anchor: None,
+            zoom_changed: None,
             items: vec![],
             matches: vec![],
             visible: vec![],
@@ -366,6 +395,13 @@ impl CacheCat {
         .detach();
     }
     fn poll(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self
+            .zoom_changed
+            .is_some_and(|time| time.elapsed() >= Duration::from_millis(300))
+        {
+            self.zoom_changed = None;
+            self.save();
+        }
         let mut changed = false;
         let mut sort_changed = false;
         if self
@@ -552,7 +588,8 @@ impl CacheCat {
         let selected = self.selected == Some(i);
         div()
             .id(i)
-            .w_full()
+            .w(px(tile_width))
+            .flex_shrink_0()
             .min_w_0()
             .h(px(tile_width))
             .flex()
@@ -600,10 +637,16 @@ fn button(id: &'static str, label: impl Into<SharedString>, p: Palette) -> State
         .child(label.into())
 }
 
-fn sidebar_button(id: &'static str, label: &'static str, icon: Icon, p: Palette) -> Stateful<Div> {
+fn sidebar_button(
+    id: &'static str,
+    label: &'static str,
+    icon: Icon,
+    p: Palette,
+    width: f32,
+) -> Stateful<Div> {
     div()
         .id(id)
-        .w_full()
+        .w(px(width))
         .min_w_0()
         .h(px(40.))
         .flex_shrink_0()

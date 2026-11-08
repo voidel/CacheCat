@@ -13,6 +13,10 @@ pub enum Icon {
     Play,
     Processor,
     Monitor,
+    Search,
+    Sort,
+    ZoomOut,
+    ZoomIn,
 }
 
 impl Icon {
@@ -27,6 +31,10 @@ impl Icon {
             Self::Play => "play",
             Self::Processor => "processor",
             Self::Monitor => "monitor",
+            Self::Search => "search",
+            Self::Sort => "sort",
+            Self::ZoomOut => "zoom-out",
+            Self::ZoomIn => "zoom-in",
         }
     }
 
@@ -73,6 +81,9 @@ impl AssetSource for Assets {
                 "<path d='M20 9a8 8 0 0 0-14-3L3 9m0-6v6h6M4 15a8 8 0 0 0 14 3l3-3m0 6v-6h-6'/>"
             }
             Some("search") => "<circle cx='10' cy='10' r='6'/><path d='m15 15 6 6'/>",
+            Some("sort") => "<path d='M3 5h11M3 10h8M3 15h5M18 4v16m-4-4 4 4 4-4'/>",
+            Some("zoom-out") => "<circle cx='10' cy='10' r='6'/><path d='M7 10h6m2 5 6 6'/>",
+            Some("zoom-in") => "<circle cx='10' cy='10' r='6'/><path d='M7 10h6m-3-3v6m5 2 6 6'/>",
             Some("download") => "<path d='M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5'/>",
             Some("pause") => {
                 "<rect x='5' y='4' width='4' height='16' rx='1'/><rect x='15' y='4' width='4' height='16' rx='1'/>"

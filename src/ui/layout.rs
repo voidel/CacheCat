@@ -1,5 +1,11 @@
 use super::*;
 
+fn grid_geometry(width: f32, requested: f32) -> (usize, f32) {
+    let tile = requested.clamp(TILE_MIN, TILE_MAX).min(width.max(1.));
+    let columns = (((width + 12.) / (tile + 12.)).floor() as usize).max(1);
+    (columns, tile)
+}
+
 fn widths(width: f32, left: f32, right: f32, details: bool) -> (f32, f32) {
     let right = if details {
         right
@@ -45,7 +51,7 @@ impl CacheCat {
         let view = cx.entity().downgrade();
         let format = self.export_format;
         let mut panel = div()
-            .w_full()
+            .w(px(right))
             .min_h_full()
             .p_4()
             .flex()
@@ -53,6 +59,7 @@ impl CacheCat {
             .gap_4()
             .child(
                 div()
+                    .w(px(right - 32.))
                     .flex()
                     .justify_between()
                     .items_center()
@@ -72,7 +79,7 @@ impl CacheCat {
             )
             .child(
                 div()
-                    .w_full()
+                    .w(px(right - 32.))
                     .h(px((right - 32.).min(340.)))
                     .flex_shrink_0()
                     .bg(rgb(p.card))
@@ -96,6 +103,7 @@ impl CacheCat {
                     if self.copied { "Copied" } else { "Copy UUID" },
                     Icon::Copy,
                     p,
+                    right - 32.,
                 )
                 .on_click(cx.listener(move |this, _, _, cx| {
                     cx.write_to_clipboard(ClipboardItem::new_string(copy_id.clone()));
@@ -106,7 +114,7 @@ impl CacheCat {
             .child(
                 div()
                     .flex()
-                    .w_full()
+                    .w(px(right - 32.))
                     .items_center()
                     .child(
                         Button::new("export-texture")
@@ -117,7 +125,7 @@ impl CacheCat {
                             })
                             .icon(Icon::Download)
                             .disabled(self.exporting)
-                            .flex_1()
+                            .w(px(right - 68.))
                             .rounded_r_none()
                             .on_click(cx.listener(|this, _, _, cx| this.export_selected(cx))),
                     )
@@ -203,8 +211,14 @@ impl Render for CacheCat {
             details,
         );
         let grid_width = width - left - right - if details { 12. } else { 6. } - 40.;
-        self.columns = ((grid_width / 190.).floor() as usize).max(1);
-        let tile_width = (grid_width - 12. * (self.columns - 1) as f32) / self.columns as f32;
+        let (columns, tile_width) = grid_geometry(grid_width, self.settings.tile_size);
+        self.columns = columns;
+        if let Some(anchor) = self.zoom_anchor.take() {
+            self.scroll.scroll_to_item_strict(
+                anchor.min(self.visible.len().saturating_sub(1)) / columns,
+                ScrollStrategy::Top,
+            );
+        }
         let indexed = self.items.iter().filter(|i| i.indexed).count();
         let unavailable = self
             .items
@@ -222,7 +236,7 @@ impl Render for CacheCat {
         window.set_window_title(&format!("CacheCat — {folder}"));
 
         let mut sidebar = div()
-            .w_full()
+            .w(px(left))
             .min_h_full()
             .p_4()
             .flex()
@@ -230,8 +244,11 @@ impl Render for CacheCat {
             .gap_4()
             .child(
                 div()
+                    .w_full()
+                    .flex_shrink_0()
                     .flex()
                     .items_center()
+                    .justify_center()
                     .gap_2()
                     .child(Icon::Cat.element(p.accent).size(px(32.)))
                     .child(
@@ -242,30 +259,17 @@ impl Render for CacheCat {
                     ),
             )
             .child(
-                div()
-                    .text_xs()
-                    .text_color(rgb(p.muted))
-                    .child("SECOND LIFE CACHE VIEWER"),
-            )
-            .child(
-                div()
-                    .mt_2()
-                    .text_lg()
-                    .whitespace_nowrap()
-                    .child(format!("{} entries", self.items.len())),
-            )
-            .child(
-                sidebar_button("choose", "Open cache folder", Icon::Folder, p)
+                sidebar_button("choose", "Open cache folder", Icon::Folder, p, left - 32.)
                     .on_click(cx.listener(Self::choose)),
             )
             .child(
-                sidebar_button("rescan", "Rescan cache", Icon::Refresh, p).on_click(cx.listener(
-                    |this, _, _, cx| {
+                sidebar_button("rescan", "Rescan cache", Icon::Refresh, p, left - 32.).on_click(
+                    cx.listener(|this, _, _, cx| {
                         if let Some(path) = this.settings.cache.clone() {
                             this.open(path, cx);
                         }
-                    },
-                )),
+                    }),
+                ),
             );
         sidebar = sidebar
             .child(
@@ -278,6 +282,7 @@ impl Render for CacheCat {
                     },
                     if self.paused { Icon::Play } else { Icon::Pause },
                     p,
+                    left - 32.,
                 )
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.paused = !this.paused;
@@ -404,10 +409,11 @@ impl Render for CacheCat {
                     .items_center()
                     .flex_shrink_0()
                     .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .child(Input::new(&self.search).h(px(44.))),
+                        div().flex_1().min_w_0().child(
+                            Input::new(&self.search)
+                                .h(px(44.))
+                                .prefix(Icon::Search.element(p.muted)),
+                        ),
                     )
                     .child(
                         div()
@@ -418,18 +424,49 @@ impl Render for CacheCat {
             )
             .child(
                 div()
+                    .w_full()
                     .flex()
+                    .flex_wrap()
                     .items_center()
+                    .justify_between()
                     .gap_3()
                     .flex_shrink_0()
-                    .child(div().text_sm().text_color(rgb(p.muted)).child("Sort"))
                     .child(
                         div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
                             .flex_1()
-                            .min_w_0()
-                            .max_w(px(244.))
-                            .h(px(36.))
-                            .child(Select::new(&self.sort_select)),
+                            .min_w(px(180.))
+                            .max_w(px(310.))
+                            .child(Icon::Sort.element(p.muted))
+                            .child(div().text_sm().text_color(rgb(p.muted)).child("Sort"))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .h(px(36.))
+                                    .child(Select::new(&self.sort_select)),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .w(px(220.))
+                            .flex_shrink_0()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(div().text_sm().text_color(rgb(p.muted)).child("Zoom"))
+                            .child(Icon::ZoomOut.element(p.muted))
+                            .child(
+                                div().flex_1().min_w_0().child(
+                                    Slider::new(&self.tile_zoom)
+                                        .horizontal()
+                                        .bg(rgb(p.accent))
+                                        .text_color(rgb(p.accent)),
+                                ),
+                            )
+                            .child(Icon::ZoomIn.element(p.muted)),
                     ),
             );
         if let Some(error) = &self.error {
@@ -487,13 +524,8 @@ impl Render for CacheCat {
                             .map(|row| {
                                 let start = row * this.columns;
                                 let end = (start + this.columns).min(this.visible.len());
-                                let mut line = div()
-                                    .w_full()
-                                    .h(px(tile_width + 12.))
-                                    .grid()
-                                    .grid_cols(this.columns as u16)
-                                    .gap_3()
-                                    .pb_3();
+                                let mut line =
+                                    div().w_full().h(px(tile_width + 12.)).flex().gap_3().pb_3();
                                 for j in start..end {
                                     line =
                                         line.child(this.card(this.visible[j], tile_width, p, cx));
@@ -651,6 +683,19 @@ impl Render for CacheCat {
 mod tests {
     use super::*;
     #[::core::prelude::v1::test]
+    fn zoom_tiles_fit_each_row_without_exceeding_thumbnail_size() {
+        for width in [80., 240., 368., 1000., 1920.] {
+            for requested in [TILE_MIN, TILE_DEFAULT, TILE_MAX, 500.] {
+                let (columns, tile) = grid_geometry(width, requested);
+                assert!(tile <= 256. && tile <= width);
+                assert!(columns as f32 * tile + (columns - 1) as f32 * 12. <= width);
+                assert!((columns + 1) as f32 * tile + columns as f32 * 12. > width);
+            }
+        }
+        assert!(grid_geometry(1000., TILE_MIN).0 > grid_geometry(1000., TILE_MAX).0);
+    }
+
+    #[::core::prelude::v1::test]
     fn panels_leave_room_for_the_grid_at_minimum_window_size() {
         for window in [800., 1000., 1280., 1920.] {
             for left in [200., 232., 400.] {
@@ -671,5 +716,6 @@ mod tests {
         assert_eq!(settings.sidebar_width, 232.);
         assert_eq!(settings.details_width, 320.);
         assert_eq!(settings.indexing_mode, IndexingMode::GpuCpu);
+        assert_eq!(settings.tile_size, TILE_DEFAULT);
     }
 }
