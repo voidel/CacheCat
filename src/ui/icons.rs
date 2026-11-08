@@ -11,6 +11,7 @@ pub enum Icon {
     Download,
     Pause,
     Play,
+    Processor,
 }
 
 impl Icon {
@@ -23,6 +24,7 @@ impl Icon {
             Self::Download => "download",
             Self::Pause => "pause",
             Self::Play => "play",
+            Self::Processor => "processor",
         }
     }
 
@@ -71,6 +73,9 @@ impl AssetSource for Assets {
                 "<rect x='5' y='4' width='4' height='16' rx='1'/><rect x='15' y='4' width='4' height='16' rx='1'/>"
             }
             Some("play") => "<path d='m6 3 15 9-15 9Z'/>",
+            Some("processor") => {
+                "<rect x='6' y='6' width='12' height='12' rx='2'/><rect x='9' y='9' width='6' height='6' rx='1'/><path d='M9 3v3m6-3v3M9 18v3m6-3v3M3 9h3m-3 6h3m12-6h3m-3 6h3'/>"
+            }
             Some("monitor") => {
                 "<rect x='2' y='3' width='20' height='14' rx='2'/><path d='M12 17v4m-5 0h10'/>"
             }

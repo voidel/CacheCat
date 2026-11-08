@@ -3,8 +3,8 @@ use cachecat::library::{ExportFormat, SortOrder};
 use cachecat::worker::{Command, Event, Item, SearchMode, Worker};
 use gpui::{prelude::*, *};
 use gpui_component::{
-    Disableable, IconName, Root, Selectable, Theme, ThemeMode, WindowExt,
-    button::{Button, ButtonGroup, ButtonVariants},
+    Disableable, IconName, Root, Theme, ThemeMode, WindowExt,
+    button::{Button, ButtonVariants},
     input::{Input, InputEvent, InputState},
     menu::{DropdownMenu, PopupMenuItem},
     select::{Select, SelectEvent, SelectState},
@@ -549,14 +549,12 @@ impl CacheCat {
         }
     }
     fn card(&self, i: usize, tile_width: f32, p: Palette, cx: &mut Context<Self>) -> AnyElement {
-        let item = &self.items[i];
-        let id = item.texture.id.to_string();
         let selected = self.selected == Some(i);
         div()
             .id(i)
             .w_full()
             .min_w_0()
-            .h(px(tile_width + 48.))
+            .h(px(tile_width))
             .flex()
             .flex_col()
             .rounded_lg()
@@ -580,33 +578,6 @@ impl CacheCat {
                     .p_2()
                     .bg(rgb(p.card))
                     .child(self.preview_element(i, p)),
-            )
-            .child(
-                div()
-                    .px_3()
-                    .py_2()
-                    .min_w_0()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .child(
-                        div()
-                            .text_xs()
-                            .truncate()
-                            .font_family("monospace")
-                            .child(format!("{}…{}", &id[..8], &id[32..])),
-                    )
-                    .child(div().text_xs().truncate().text_color(rgb(p.muted)).child(
-                        if item.indexed {
-                            "Search ready".to_string()
-                        } else if item.error.is_some() {
-                            "Incomplete cache entry".into()
-                        } else if let Some((w, h)) = item.dimensions {
-                            format!("{w} × {h}")
-                        } else {
-                            "Texture".into()
-                        },
-                    )),
             )
             .into_any_element()
     }

@@ -286,37 +286,78 @@ impl Render for CacheCat {
                 })),
             )
             .child(
-                div().w_full().flex_shrink_0().flex().flex_col().gap_2()
-                    .child(div().text_sm().text_color(rgb(p.muted)).child("Indexing device"))
+                div()
+                    .w_full()
+                    .flex_shrink_0()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
                     .child(
-                        ButtonGroup::new("indexing-device").w_full().compact()
-                            .children(IndexingMode::ALL.into_iter().map(|mode| {
-                                let available = mode.available(self.gpu_available == Some(true));
-                                Button::new(mode.label())
-                                    .label(mode.label()).flex_1().min_w_0().px_1().text_size(px(11.))
-                                    .selected(self.indexing_mode == mode)
-                                    .disabled(!available)
-                                    .tooltip(if !available {
-                                        if self.gpu_available.is_none() { "Checking GPU availability" } else { "GPU acceleration is unavailable on this system or build" }
-                                    } else {
-                                        match mode {
-                                            IndexingMode::GpuCpu => "Index concurrently with GPU and CPU workers",
-                                            IndexingMode::Gpu => "Use GPU acceleration; decoding and some model operations still use CPU",
-                                            IndexingMode::Cpu => "Index using the CPU worker only",
-                                        }
-                                    })
-                            }))
-                            .on_click(cx.listener(|this, selected: &Vec<usize>, _, cx| {
-                                let Some(mode) = selected.first().and_then(|&i| IndexingMode::ALL.get(i)).copied() else { return; };
-                                if mode.available(this.gpu_available == Some(true)) {
-                                    this.indexing_mode = mode;
-                                    this.settings.indexing_mode = mode;
-                                    let _ = this.worker.commands.send(Command::IndexingMode(mode));
-                                    this.save();
-                                    cx.notify();
-                                }
-                            }))
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .text_sm()
+                            .text_color(rgb(p.muted))
+                            .child(Icon::Processor.element())
+                            .child("Indexing device"),
                     )
+                    .child(
+                        Button::new("indexing-device")
+                            .w_full()
+                            .h(px(32.))
+                            .px_3()
+                            .child(
+                                div()
+                                    .w(px(left - 58.))
+                                    .flex()
+                                    .items_center()
+                                    .justify_between()
+                                    .child(self.indexing_mode.label())
+                                    .child(
+                                        gpui_component::Icon::new(IconName::ChevronDown)
+                                            .size(px(14.)),
+                                    ),
+                            )
+                            .tooltip("Choose the devices used for indexing")
+                            .dropdown_menu({
+                                let view = cx.entity().downgrade();
+                                move |mut menu, _, cx| {
+                                    let Some(entity) = view.upgrade() else {
+                                        return menu;
+                                    };
+                                    let this = entity.read(cx);
+                                    let selected = this.indexing_mode;
+                                    let gpu = this.gpu_available == Some(true);
+                                    menu = menu.min_w(px(left - 32.));
+                                    for mode in IndexingMode::ALL {
+                                        let view = view.clone();
+                                        menu = menu.item(
+                                            PopupMenuItem::new(mode.label())
+                                                .checked(mode == selected)
+                                                .disabled(!mode.available(gpu))
+                                                .on_click(move |_, _, cx| {
+                                                    let _ = view.update(cx, |this, cx| {
+                                                        if mode.available(
+                                                            this.gpu_available == Some(true),
+                                                        ) {
+                                                            this.indexing_mode = mode;
+                                                            this.settings.indexing_mode = mode;
+                                                            let _ = this
+                                                                .worker
+                                                                .commands
+                                                                .send(Command::IndexingMode(mode));
+                                                            this.save();
+                                                            cx.notify();
+                                                        }
+                                                    });
+                                                }),
+                                        );
+                                    }
+                                    menu
+                                }
+                            }),
+                    ),
             )
             .child(
                 div()
@@ -439,7 +480,7 @@ impl Render for CacheCat {
                                 let end = (start + this.columns).min(this.visible.len());
                                 let mut line = div()
                                     .w_full()
-                                    .h(px(tile_width + 60.))
+                                    .h(px(tile_width + 12.))
                                     .grid()
                                     .grid_cols(this.columns as u16)
                                     .gap_3()
