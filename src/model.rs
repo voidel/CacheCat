@@ -1,0 +1,571 @@
+use anyhow::{Context, Result, ensure};
+use image::{DynamicImage, imageops::FilterType};
+use ort::{session::Session, value::Tensor};
+use sha2::{Digest, Sha256};
+use std::{
+    fs::{self, File},
+    io::{Read, Write},
+    path::{Path, PathBuf},
+    time::Duration,
+};
+use tokenizers::{PaddingParams, PaddingStrategy, Tokenizer, TruncationParams};
+
+pub const MODEL_ID: &str = "siglip-base-patch16-224-q8-4649052-preprocess-v1";
+const BASE: &str = "https://huggingface.co/Xenova/siglip-base-patch16-224/resolve/4649052661e53c7000355844105f8a1792088239";
+const FILES: &[(&str, &str, u64)] = &[
+    (
+        "onnx/vision_model_quantized.onnx",
+        "ef14a954f3d57e1806666432bd9785004c1dc27100aa260eee0cb0f10a5de058",
+        99_499_129,
+    ),
+    (
+        "onnx/text_model_quantized.onnx",
+        "ad0329b1f35acc66d8953ff2559ce358da8eb0a7011794cf951523d63a4dbce2",
+        111_475_220,
+    ),
+    (
+        "tokenizer.json",
+        "4a17c975210be5ab4c36b47d8dae4eefb866dbfb1e676e394aad85dc30a3ae08",
+        2_398_744,
+    ),
+];
+
+pub fn ready(dir: &Path) -> bool {
+    FILES
+        .iter()
+        .all(|(name, _, size)| dir.join(name).metadata().is_ok_and(|m| m.len() == *size))
+}
+
+/// Downloads only public model assets; no cache data or queries leave the machine.
+pub fn download(dir: &Path, mut progress: impl FnMut(String)) -> Result<()> {
+    let client = reqwest::blocking::Client::builder()
+        .connect_timeout(Duration::from_secs(30))
+        .timeout(Duration::from_secs(900))
+        .build()?;
+    for &(name, hash, expected_size) in FILES {
+        let dest = dir.join(name);
+        if verify(&dest, hash, expected_size).is_ok() {
+            continue;
+        }
+        fs::create_dir_all(dest.parent().unwrap())?;
+        let partial = dest.with_extension("partial");
+        let result = (|| -> Result<()> {
+            let mut response = client
+                .get(format!("{BASE}/{name}"))
+                .send()?
+                .error_for_status()?;
+            let mut output = File::create(&partial)?;
+            let mut buffer = [0; 128 * 1024];
+            let mut total = 0_u64;
+            let mut last = 0_u64;
+            loop {
+                let n = response.read(&mut buffer)?;
+                if n == 0 {
+                    break;
+                }
+                total += n as u64;
+                ensure!(total <= expected_size, "Unexpected model file size");
+                output.write_all(&buffer[..n])?;
+                if total / 1_000_000 != last {
+                    last = total / 1_000_000;
+                    progress(format!(
+                        "Downloading {name}: {} / {} MB",
+                        last,
+                        expected_size / 1_000_000
+                    ));
+                }
+            }
+            output.sync_all()?;
+            drop(output);
+            verify(&partial, hash, expected_size)?;
+            if dest.exists() {
+                fs::remove_file(&dest)?;
+            }
+            fs::rename(&partial, &dest)?;
+            Ok(())
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(partial);
+        }
+        result?;
+    }
+    Ok(())
+}
+
+fn verify(path: &Path, hash: &str, size: u64) -> Result<()> {
+    let mut f = File::open(path)?;
+    ensure!(f.metadata()?.len() == size, "Model file size mismatch");
+    if !hash.is_empty() {
+        let mut digest = Sha256::new();
+        let mut buffer = [0; 128 * 1024];
+        loop {
+            let n = f.read(&mut buffer)?;
+            if n == 0 {
+                break;
+            }
+            digest.update(&buffer[..n]);
+        }
+        ensure!(
+            format!("{:x}", digest.finalize()) == hash,
+            "Model checksum mismatch"
+        );
+    }
+    Ok(())
+}
+
+struct Engine {
+    vision: Session,
+    text: Session,
+    tokenizer: Tokenizer,
+    dir: PathBuf,
+    pub backend: String,
+    accelerated: bool,
+}
+
+fn session(path: &Path, gpu: bool) -> Result<Session> {
+    let threads = std::env::var("CACHECAT_CPU_THREADS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|&v| (1..=16).contains(&v))
+        .unwrap_or_else(|| {
+            std::thread::available_parallelism().map_or(2, |n| (n.get() / 2).clamp(1, 4))
+        });
+    let builder = Session::builder()?
+        .with_intra_threads(if gpu { 2 } else { threads })?
+        .with_parallel_execution(false)?
+        .with_memory_pattern(!gpu)?
+        .with_config_entry("session.intra_op.allow_spinning", "0")?;
+    #[cfg(target_os = "windows")]
+    let builder = if gpu {
+        builder.with_execution_providers([
+            ort::execution_providers::DirectMLExecutionProvider::default()
+                .build()
+                .error_on_failure(),
+        ])?
+    } else {
+        builder
+    };
+    #[cfg(target_os = "macos")]
+    let builder = if gpu {
+        builder.with_execution_providers([
+            ort::execution_providers::CoreMLExecutionProvider::default()
+                .build()
+                .error_on_failure(),
+        ])?
+    } else {
+        builder
+    };
+    #[cfg(all(target_os = "linux", feature = "cuda"))]
+    let builder = if gpu {
+        builder.with_execution_providers([
+            ort::execution_providers::CUDAExecutionProvider::default()
+                .build()
+                .error_on_failure(),
+        ])?
+    } else {
+        builder
+    };
+    let _ = gpu;
+    Ok(builder.commit_from_file(path)?)
+}
+
+impl Engine {
+    pub fn load(dir: &Path, force_cpu: bool) -> Result<Self> {
+        for &(file, hash, size) in FILES {
+            verify(&dir.join(file), hash, size)
+                .context("Model missing or damaged; download it again")?;
+        }
+        let gpu = !force_cpu
+            && cfg!(any(
+                target_os = "windows",
+                target_os = "macos",
+                all(target_os = "linux", feature = "cuda")
+            ));
+        let make = |gpu| -> Result<(Session, Session)> {
+            Ok((
+                session(&dir.join(FILES[0].0), gpu)?,
+                session(&dir.join(FILES[1].0), gpu)?,
+            ))
+        };
+        let (vision, text, accelerated) = match make(gpu) {
+            Ok((v, t)) => (v, t, gpu),
+            Err(_) if gpu => {
+                let (v, t) = make(false)?;
+                (v, t, false)
+            }
+            Err(e) => return Err(e),
+        };
+        let mut tokenizer = Tokenizer::from_file(dir.join("tokenizer.json"))
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        tokenizer
+            .with_truncation(Some(TruncationParams {
+                max_length: 64,
+                ..Default::default()
+            }))
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        tokenizer.with_padding(Some(PaddingParams {
+            strategy: PaddingStrategy::Fixed(64),
+            pad_id: 1,
+            pad_token: "</s>".into(),
+            ..Default::default()
+        }));
+        let backend = if accelerated {
+            if cfg!(target_os = "windows") {
+                "DirectML + CPU"
+            } else if cfg!(target_os = "macos") {
+                "Core ML + CPU"
+            } else {
+                "CUDA + CPU"
+            }
+        } else {
+            "CPU"
+        }
+        .into();
+        Ok(Self {
+            vision,
+            text,
+            tokenizer,
+            dir: dir.to_path_buf(),
+            backend,
+            accelerated,
+        })
+    }
+
+    fn fallback(&mut self) -> Result<()> {
+        self.vision = session(&self.dir.join(FILES[0].0), false)?;
+        self.text = session(&self.dir.join(FILES[1].0), false)?;
+        self.accelerated = false;
+        self.backend = "CPU (GPU fallback)".into();
+        Ok(())
+    }
+
+    fn image_inner(&mut self, pixels: Vec<f32>) -> Result<Vec<f32>> {
+        let input = Tensor::from_array(([1, 3, 224, 224], pixels))?;
+        let outputs = self.vision.run(ort::inputs!["pixel_values"=>input])?;
+        normalize(
+            outputs["pooler_output"]
+                .try_extract_tensor::<f32>()?
+                .1
+                .to_vec(),
+        )
+    }
+    pub fn text(&mut self, query: &str) -> Result<Vec<f32>> {
+        let text = query
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_lowercase();
+        let encoding = self
+            .tokenizer
+            .encode(format!("This is a photo of {text}."), true)
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        let ids: Vec<i64> = encoding.get_ids().iter().map(|&i| i as i64).collect();
+        match self.text_inner(ids.clone()) {
+            Ok(v) => Ok(v),
+            Err(_) if self.accelerated => {
+                self.fallback()?;
+                self.text_inner(ids)
+            }
+            Err(e) => Err(e),
+        }
+    }
+    fn text_inner(&mut self, ids: Vec<i64>) -> Result<Vec<f32>> {
+        let outputs = self
+            .text
+            .run(ort::inputs!["input_ids"=>Tensor::from_array(([1,64],ids))?])?;
+        normalize(
+            outputs["pooler_output"]
+                .try_extract_tensor::<f32>()?
+                .1
+                .to_vec(),
+        )
+    }
+}
+
+/// Native drivers run out-of-process: an access violation must not take down the UI.
+pub struct Model {
+    child: std::process::Child,
+    output: std::io::BufReader<std::process::ChildStdout>,
+    dir: PathBuf,
+    cpu: bool,
+    pub backend: String,
+}
+enum Request {
+    Image(Vec<f32>),
+    Text(String),
+}
+const IMAGE_FLOATS: usize = 3 * 224 * 224;
+
+// One bounded binary frame per request. Writing JSON directly to ChildStdin
+// previously issued a pipe write for practically every pixel value and comma.
+fn write_request(mut writer: impl Write, request: &Request) -> Result<()> {
+    let mut frame = Vec::new();
+    match request {
+        Request::Image(pixels) => {
+            ensure!(pixels.len() == IMAGE_FLOATS, "Invalid image tensor size");
+            frame.reserve(5 + IMAGE_FLOATS * 4);
+            frame.push(1);
+            frame.extend((IMAGE_FLOATS as u32 * 4).to_le_bytes());
+            frame.extend(pixels.iter().flat_map(|v| v.to_le_bytes()));
+        }
+        Request::Text(text) => {
+            ensure!(text.len() <= 1024 * 1024, "Search text is too long");
+            frame.push(2);
+            frame.extend((text.len() as u32).to_le_bytes());
+            frame.extend(text.as_bytes());
+        }
+    }
+    writer.write_all(&frame)?;
+    writer.flush()?;
+    Ok(())
+}
+
+fn read_request(mut reader: impl Read) -> Result<Option<Request>> {
+    let mut tag = [0];
+    if reader.read(&mut tag)? == 0 {
+        return Ok(None);
+    }
+    let mut length = [0; 4];
+    reader.read_exact(&mut length)?;
+    let length = u32::from_le_bytes(length) as usize;
+    ensure!(
+        (tag[0] == 1 && length == IMAGE_FLOATS * 4) || (tag[0] == 2 && length <= 1024 * 1024),
+        "Invalid inference request frame"
+    );
+    let mut bytes = vec![0; length];
+    reader.read_exact(&mut bytes)?;
+    Ok(Some(if tag[0] == 1 {
+        Request::Image(
+            bytes
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|v| f32::from_le_bytes(*v))
+                .collect(),
+        )
+    } else {
+        Request::Text(String::from_utf8(bytes)?)
+    }))
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Response {
+    backend: String,
+    vector: Option<Vec<f32>>,
+    error: Option<String>,
+}
+impl Model {
+    pub fn load(dir: &Path, force_cpu: bool) -> Result<Self> {
+        match Self::spawn(dir, force_cpu) {
+            Ok(m) => Ok(m),
+            Err(_) if !force_cpu => {
+                let mut m = Self::spawn(dir, true)?;
+                m.backend = "CPU (GPU startup fallback)".into();
+                Ok(m)
+            }
+            Err(e) => Err(e),
+        }
+    }
+    fn spawn(dir: &Path, cpu: bool) -> Result<Self> {
+        use std::process::{Command, Stdio};
+        let mut command = Command::new(std::env::current_exe()?);
+        command
+            .arg("--inference-worker")
+            .arg("--data-dir")
+            .arg(dir)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        if cpu {
+            command.arg("--cpu");
+        }
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x08000000);
+        }
+        let mut child = command.spawn()?;
+        let output = std::io::BufReader::new(child.stdout.take().unwrap());
+        let mut model = Self {
+            child,
+            output,
+            dir: dir.to_path_buf(),
+            cpu,
+            backend: String::new(),
+        };
+        let response = model.read()?;
+        if let Some(e) = response.error {
+            anyhow::bail!(e);
+        }
+        model.backend = response.backend;
+        Ok(model)
+    }
+    fn read(&mut self) -> Result<Response> {
+        use std::io::BufRead;
+        let mut line = String::new();
+        ensure!(
+            self.output.read_line(&mut line)? > 0,
+            "Inference helper exited unexpectedly"
+        );
+        Ok(serde_json::from_str(&line)?)
+    }
+    fn request(&mut self, request: &Request) -> Result<Vec<f32>> {
+        let result = (|| -> Result<Vec<f32>> {
+            let input = self.child.stdin.as_mut().context("Inference pipe closed")?;
+            write_request(input, request)?;
+            let response = self.read()?;
+            if let Some(error) = response.error {
+                anyhow::bail!(error);
+            }
+            self.backend = response.backend;
+            response.vector.context("No embedding returned")
+        })();
+        match result {
+            Err(_) if !self.cpu => {
+                let dir = self.dir.clone();
+                *self = Self::spawn(&dir, true)?;
+                let result = self.request(request);
+                self.backend = "CPU (GPU fallback)".into();
+                result
+            }
+            other => other,
+        }
+    }
+    pub fn image(&mut self, image: &DynamicImage) -> Result<Vec<f32>> {
+        self.image_prepared(preprocess(image))
+    }
+    pub fn image_prepared(&mut self, pixels: Vec<f32>) -> Result<Vec<f32>> {
+        self.request(&Request::Image(pixels))
+    }
+    pub fn text(&mut self, query: &str) -> Result<Vec<f32>> {
+        self.request(&Request::Text(query.to_owned()))
+    }
+}
+impl Drop for Model {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+pub fn inference_worker(dir: &Path, cpu: bool) -> Result<()> {
+    #[cfg(target_os = "windows")]
+    // Only this isolated helper suppresses OS crash dialogs. The parent observes EOF.
+    unsafe {
+        windows_sys::Win32::System::Diagnostics::Debug::SetErrorMode(0x0001 | 0x0002);
+    }
+    let mut stdout = std::io::BufWriter::new(std::io::stdout().lock());
+    let mut emit = |response: Response| -> Result<()> {
+        serde_json::to_writer(&mut stdout, &response)?;
+        stdout.write_all(b"\n")?;
+        stdout.flush()?;
+        Ok(())
+    };
+    let mut engine = match Engine::load(dir, cpu) {
+        Ok(e) => e,
+        Err(e) => {
+            emit(Response {
+                backend: "CPU".into(),
+                vector: None,
+                error: Some(format!("{e:#}")),
+            })?;
+            return Ok(());
+        }
+    };
+    emit(Response {
+        backend: engine.backend.clone(),
+        vector: None,
+        error: None,
+    })?;
+    let mut stdin = std::io::BufReader::new(std::io::stdin().lock());
+    while let Some(request) = read_request(&mut stdin)? {
+        let result = match request {
+            Request::Image(pixels) => engine.image_inner(pixels),
+            Request::Text(text) => engine.text(&text),
+        };
+        let (vector, error) = match result {
+            Ok(v) => (Some(v), None),
+            Err(e) => (None, Some(format!("{e:#}"))),
+        };
+        emit(Response {
+            backend: engine.backend.clone(),
+            vector,
+            error,
+        })?;
+    }
+    Ok(())
+}
+
+pub fn preprocess(image: &DynamicImage) -> Vec<f32> {
+    // Composite alpha onto neutral grey, then bicubic resize exactly to 224².
+    let rgba = image.to_rgba8();
+    let rgb = image::RgbImage::from_fn(rgba.width(), rgba.height(), |x, y| {
+        let p = rgba.get_pixel(x, y).0;
+        let a = p[3] as f32 / 255.;
+        image::Rgb([0, 1, 2].map(|c| (p[c] as f32 * a + 127.5 * (1. - a)).round() as u8))
+    });
+    let resized = image::imageops::resize(&rgb, 224, 224, FilterType::CatmullRom);
+    let mut data = vec![0.; 3 * 224 * 224];
+    for (i, p) in resized.pixels().enumerate() {
+        for c in 0..3 {
+            data[c * 224 * 224 + i] = p[c] as f32 / 127.5 - 1.;
+        }
+    }
+    data
+}
+pub fn normalize(mut values: Vec<f32>) -> Result<Vec<f32>> {
+    ensure!(
+        values.len() == 768 && values.iter().all(|x| x.is_finite()),
+        "Unexpected SigLIP embedding"
+    );
+    let norm = values.iter().map(|x| x * x).sum::<f32>().sqrt();
+    ensure!(norm > 1e-12, "Empty embedding");
+    for v in &mut values {
+        *v /= norm;
+    }
+    Ok(values)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn inference_frames_preserve_pixels_and_reject_invalid_lengths() {
+        let pixels: Vec<f32> = (0..IMAGE_FLOATS)
+            .map(|i| (i % 256) as f32 / 127.5 - 1.)
+            .collect();
+        let mut bytes = vec![];
+        write_request(&mut bytes, &Request::Image(pixels.clone())).unwrap();
+        write_request(&mut bytes, &Request::Text("red silk 🐈".into())).unwrap();
+        let mut reader = std::io::Cursor::new(bytes);
+        assert!(
+            matches!(read_request(&mut reader).unwrap(), Some(Request::Image(v)) if v == pixels)
+        );
+        assert!(
+            matches!(read_request(&mut reader).unwrap(), Some(Request::Text(v)) if v == "red silk 🐈")
+        );
+        assert!(read_request(&mut reader).unwrap().is_none());
+        for malformed in [
+            vec![1, 0, 0, 0, 0],
+            vec![2, 255, 255, 255, 255],
+            vec![3, 0, 0, 0, 0],
+            vec![2, 2, 0, 0, 0, b'a'],
+        ] {
+            assert!(read_request(malformed.as_slice()).is_err());
+        }
+    }
+    #[test]
+    fn image_layout_and_normalization() {
+        let im = DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+            2,
+            3,
+            image::Rgba([255, 0, 0, 255]),
+        ));
+        let v = preprocess(&im);
+        assert_eq!(v.len(), 150528);
+        assert_eq!(v[0], 1.);
+        assert_eq!(v[50176], -1.);
+        let n = normalize(vec![2.; 768]).unwrap();
+        assert!((n.iter().map(|x| x * x).sum::<f32>() - 1.).abs() < 0.0001);
+        assert!(normalize(vec![f32::NAN; 768]).is_err());
+    }
+}

@@ -1,0 +1,100 @@
+name: Build and release
+on:
+  push:
+    branches: [main, 'codex/**']
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: cachecat-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+jobs:
+  desktop:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2022
+            platform: windows-x86_64
+          - os: macos-15
+            platform: macos-aarch64
+          - os: macos-15-intel
+            platform: macos-x86_64
+          - os: ubuntu-22.04
+            platform: linux-x86_64
+    runs-on: ${{ matrix.os }}
+    env:
+      CARGO_BUILD_JOBS: 2
+      CARGO_PROFILE_DEV_DEBUG: 0
+      MACOSX_DEPLOYMENT_TARGET: '12.0'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Linux libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake pkg-config libasound2-dev libfontconfig1-dev libfreetype6-dev libxkbcommon-x11-dev libwayland-dev libx11-xcb-dev libx11-dev libxcb1-dev libxcomposite-dev libxrandr-dev libxi-dev libxcursor-dev libxinerama-dev libvulkan-dev libssl-dev
+      - run: cargo fmt --check
+      - run: cargo test --locked --all-targets
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo build --locked --release
+      - name: Read synthetic viewer cache
+        shell: bash
+        run: ./target/release/cachecat --cache web/tests/fixtures/texturecache --inspect 4
+      - name: Package native application
+        run: python tools/package.py --platform ${{ matrix.platform }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cachecat-${{ matrix.platform }}
+          path: dist/*
+          if-no-files-found: error
+  browser:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: corepack enable && corepack prepare pnpm@11.25.0 --activate
+      - run: pnpm --dir web install --frozen-lockfile
+      - run: pnpm --dir web test
+      - run: pnpm --dir web build
+      - run: pnpm --dir web exec playwright install --with-deps chromium
+      - name: Serve in isolated container
+        run: |
+          docker build -t cachecat-check .
+          docker run -d --name cachecat-check -p 127.0.0.1:5188:8080 --read-only --tmpfs /tmp --cap-drop ALL cachecat-check
+          for attempt in $(seq 1 30); do curl --fail http://127.0.0.1:5188/cachecat/ >/dev/null && break; sleep 1; done
+      - run: pnpm --dir web exec playwright test
+      - name: Package website
+        run: tar -czf cachecat-web.tar.gz -C web/dist .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cachecat-web
+          path: cachecat-web.tar.gz
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [desktop, browser]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+      - name: Checksums
+        working-directory: release-assets
+        run: sha256sum * > SHA256SUMS.txt
+      - name: Create reviewable draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: gh release create "$RELEASE_TAG" release-assets/* --draft --verify-tag --title "CacheCat $RELEASE_TAG" --notes-file docs/release-notes.md

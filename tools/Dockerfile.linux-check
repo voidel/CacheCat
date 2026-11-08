@@ -1,0 +1,9 @@
+FROM rust:slim-bookworm AS check
+RUN apt-get update && apt-get install -y --no-install-recommends clang cmake pkg-config libasound2-dev libfontconfig1-dev libfreetype6-dev libxkbcommon-x11-dev libwayland-dev libx11-xcb-dev libx11-dev libxcb1-dev libxcomposite-dev libxrandr-dev libxi-dev libxcursor-dev libxinerama-dev libvulkan-dev libssl-dev && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY Cargo.toml Cargo.lock ./
+COPY src ./src
+COPY vendor ./vendor
+COPY web/tests/fixtures ./web/tests/fixtures
+ENV CARGO_BUILD_JOBS=2 CARGO_PROFILE_DEV_DEBUG=0
+RUN --mount=type=cache,target=/usr/local/cargo/registry --mount=type=cache,target=/app/target cargo check --locked && cargo test --locked --all-targets
