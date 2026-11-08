@@ -547,13 +547,24 @@ impl Render for CacheCat {
                         .w_full()
                         .h(px(6.))
                         .rounded_full()
+                        .flex()
+                        .overflow_hidden()
                         .bg(rgb(p.card))
                         .child(
                             div()
                                 .h_full()
+                                .flex_shrink_0()
                                 .w(relative(indexed as f32 / self.items.len().max(1) as f32))
-                                .rounded_full()
                                 .bg(rgb(p.accent)),
+                        )
+                        .child(
+                            div()
+                                .h_full()
+                                .flex_shrink_0()
+                                .w(relative(
+                                    unavailable as f32 / self.items.len().max(1) as f32,
+                                ))
+                                .bg(rgb(p.progress_unavailable)),
                         ),
                 )
                 .child(
