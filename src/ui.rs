@@ -208,6 +208,7 @@ impl CacheCat {
                             cx,
                         )
                     });
+                    this.use_relevance_for_search(window, cx);
                     this.query_changed = Some(Instant::now());
                     this.matches.clear();
                     this.visible.clear();
@@ -239,9 +240,10 @@ impl CacheCat {
                     cx.notify();
                 }
             }),
-            cx.subscribe_in(&search, window, |this, _, event, _, cx| {
+            cx.subscribe_in(&search, window, |this, _, event, window, cx| {
                 if matches!(event, InputEvent::Change | InputEvent::PressEnter { .. }) {
                     this.query = this.search.read(cx).value().to_string();
+                    this.use_relevance_for_search(window, cx);
                     this.query_changed = Some(Instant::now());
                     this.visible.clear();
                     this.matches.clear();
@@ -318,6 +320,20 @@ impl CacheCat {
         .detach();
         this
     }
+    fn use_relevance_for_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.query.trim().is_empty() && self.settings.sort != SortOrder::Relevance {
+            self.settings.sort = SortOrder::Relevance;
+            self.sort_select.update(cx, |select, cx| {
+                select.set_selected_value(
+                    &SharedString::from(SortOrder::Relevance.label()),
+                    window,
+                    cx,
+                );
+            });
+            self.save();
+        }
+    }
+
     fn save(&mut self) {
         if let Err(e) = (|| -> anyhow::Result<()> {
             std::fs::create_dir_all(&self.data)?;
