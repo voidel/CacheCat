@@ -5,7 +5,7 @@
 //! https://github.com/secondlife/viewer/blob/master/indra/llmath/llvolume.cpp
 //! Row orientation: indra/llimagej2coj/llimagej2coj.cpp, decodeImpl.
 use anyhow::{Result, ensure};
-use image::{RgbImage, Rgba, RgbaImage};
+use image::{DynamicImage, GenericImageView, Pixel, RgbImage, Rgba, RgbaImage};
 use std::collections::HashMap;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -83,7 +83,11 @@ fn resolution(w: u32, h: u32) -> (usize, usize) {
 }
 
 impl Mesh {
-    pub fn from_map(map: &RgbImage, options: Options) -> Result<Self> {
+    pub fn from_map<I>(map: &I, options: Options) -> Result<Self>
+    where
+        I: GenericImageView,
+        I::Pixel: Pixel<Subpixel = u8>,
+    {
         let (w, h) = map.dimensions();
         ensure!(
             w >= 2 && h >= 2,
@@ -123,7 +127,7 @@ impl Mesh {
                 let index = *samples.entry((x, y)).or_insert_with(|| {
                     // The viewer's JPEG2000 decoder stores rows bottom-up;
                     // image::RgbImage uses top-down rows. Preserve SL sampling.
-                    let pixel = map.get_pixel(x, h - 1 - y).0;
+                    let pixel = map.get_pixel(x, h - 1 - y).to_rgb().0;
                     let mut p = V3(
                         pixel[0] as f32 / 255. - 0.5,
                         pixel[1] as f32 / 255. - 0.5,
@@ -140,6 +144,7 @@ impl Mesh {
         }
         let mut triangles = Vec::with_capacity(cols * rows * 2);
         let mut normals = vec![V3::default(); positions.len()];
+        let mut area = 0.;
         for row in 0..rows {
             for col in 0..cols {
                 let a = grid[row * (cols + 1) + col];
@@ -152,6 +157,7 @@ impl Mesh {
                         .sub(positions[a])
                         .cross(positions[c].sub(positions[a]));
                     if normal.dot(normal) > 1e-16 {
+                        area += normal.dot(normal).sqrt() * 0.5;
                         for i in triangle {
                             normals[i] = normals[i].add(normal);
                         }
@@ -161,8 +167,8 @@ impl Mesh {
             }
         }
         ensure!(
-            !triangles.is_empty(),
-            "This texture does not form a visible sculpt surface."
+            (0.002..=384.).contains(&area),
+            "This texture does not form a valid sculpt surface."
         );
         let mut lo = V3(f32::INFINITY, f32::INFINITY, f32::INFINITY);
         let mut hi = V3(f32::NEG_INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY);
@@ -186,6 +192,26 @@ impl Mesh {
             two_sided: options.topology == Topology::Plane,
         })
     }
+}
+
+/// A texture has no sculpt usage flag. Check the original decoded colour data
+/// against the viewer's non-degenerate surface-area limits at highest LOD.
+/// Try every stitching type: a valid plane need not form a valid sphere.
+/// Neither the recommended 64x64 size nor a square aspect ratio is mandatory.
+pub fn compatible_topology(image: &DynamicImage) -> Option<Topology> {
+    if !image.color().has_color() || image.color().channel_count() < 3 {
+        return None;
+    }
+    Topology::ALL.into_iter().find(|&topology| {
+        Mesh::from_map(
+            image,
+            Options {
+                topology,
+                ..Default::default()
+            },
+        )
+        .is_ok()
+    })
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -464,6 +490,45 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn eligibility_requires_colour_and_a_valid_surface_not_just_dimensions() {
+        let flat = DynamicImage::ImageRgb8(RgbImage::from_pixel(64, 64, image::Rgb([128; 3])));
+        let grey = DynamicImage::ImageLuma8(image::GrayImage::from_fn(64, 64, |x, y| {
+            image::Luma([(x + y) as u8])
+        }));
+        assert_eq!(compatible_topology(&flat), None);
+        assert_eq!(compatible_topology(&grey), None);
+        assert_eq!(compatible_topology(&DynamicImage::new_rgb8(1, 64)), None);
+        let coloured = DynamicImage::ImageRgb8(map());
+        assert!(compatible_topology(&coloured).is_some());
+        // Alpha isn't used for sculpt positions, including a fully transparent map.
+        let transparent = DynamicImage::ImageRgba8(RgbaImage::from_fn(64, 64, |x, y| {
+            let p = coloured.get_pixel(x, y).0;
+            Rgba([p[0], p[1], p[2], 0])
+        }));
+        assert!(compatible_topology(&transparent).is_some());
+    }
+
+    #[test]
+    fn eligibility_checks_original_data_and_accepts_rectangular_maps() {
+        for (w, h) in [(128, 32), (32, 128), (256, 16), (512, 512)] {
+            let image = DynamicImage::ImageRgb8(RgbImage::from_fn(w, h, |x, y| {
+                image::Rgb([(x * 255 / (w - 1)) as u8, (y * 255 / (h - 1)) as u8, 128])
+            }));
+            assert!(compatible_topology(&image).is_some(), "{w}x{h}");
+        }
+        // Rapidly alternating vertex positions exceed the SL surface-area limit.
+        // A resized thumbnail could smooth this into a different, accepted surface.
+        let excessive = DynamicImage::ImageRgb8(RgbImage::from_fn(64, 64, |x, y| {
+            image::Rgb([((x / 2 % 2) * 255) as u8, ((y / 2 % 2) * 255) as u8, 128])
+        }));
+        assert_eq!(compatible_topology(&excessive), None);
+        let tiny = DynamicImage::ImageRgb8(RgbImage::from_fn(64, 64, |x, y| {
+            image::Rgb([(x / 32) as u8, (y / 32) as u8, 128])
+        }));
+        assert_eq!(compatible_topology(&tiny), None);
     }
 
     #[test]

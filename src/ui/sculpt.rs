@@ -40,6 +40,7 @@ struct SculptPreview {
     frame: Option<Arc<RenderImage>>,
     error: Option<String>,
     loading: bool,
+    available: bool,
     dirty: bool,
     closed: bool,
     dimensions: (u32, u32),
@@ -59,11 +60,30 @@ impl SculptPreview {
                             "This texture is no longer in the cache. Rescan and try again."
                         )
                     })?;
-                    cache::decode(&cache.read(texture)?).map(|image| Arc::new(image.into_rgb8()))
+                    let image = cache::decode(&cache.read(texture)?)?;
+                    let topology =
+                        cachecat::sculpt::compatible_topology(&image).ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "This image does not meet the requirements for a sculpt map."
+                            )
+                        })?;
+                    Ok::<_, anyhow::Error>((Arc::new(image.into_rgb8()), topology))
                 })
                 .await;
             let map = match decoded {
-                Ok(map) => map,
+                Ok((map, topology)) => {
+                    if view
+                        .update_in(cx, |this, _, cx| {
+                            this.options.topology = topology;
+                            this.available = true;
+                            cx.notify();
+                        })
+                        .is_err()
+                    {
+                        return;
+                    }
+                    map
+                }
                 Err(error) => {
                     let _ = view.update_in(cx, |this, _, cx| {
                         this.loading = false;
@@ -106,7 +126,7 @@ impl SculptPreview {
                         let map = map.clone();
                         let mesh = cx
                             .background_spawn(async move {
-                                Mesh::from_map(&map, options)
+                                Mesh::from_map(map.as_ref(), options)
                                     .map(Arc::new)
                                     .map_err(|e| e.to_string())
                             })
@@ -167,6 +187,7 @@ impl SculptPreview {
             frame: None,
             error: None,
             loading: true,
+            available: false,
             dirty: true,
             closed: false,
             dimensions: (640, 400),
@@ -261,7 +282,9 @@ impl Render for SculptPreview {
         } else {
             viewport = viewport.child(div().p_6().text_sm().text_color(rgb(p.muted)).child(
                 self.error.clone().unwrap_or_else(|| {
-                    if self.loading {
+                    if self.loading && !self.available {
+                        "Checking sculpt…"
+                    } else if self.loading {
                         "Loading sculpt…"
                     } else {
                         "No sculpt preview"
@@ -279,6 +302,7 @@ impl Render for SculptPreview {
             .gap_2()
             .child(
                 Button::new("sculpt-topology")
+                    .disabled(!self.available)
                     .icon(Icon::Cube)
                     .label(topology.label())
                     .dropdown_caret(true)
@@ -303,6 +327,7 @@ impl Render for SculptPreview {
             )
             .child(
                 Button::new("sculpt-mirror")
+                    .disabled(!self.available)
                     .label(if self.options.mirror {
                         "Mirror: on"
                     } else {
@@ -316,6 +341,7 @@ impl Render for SculptPreview {
             )
             .child(
                 Button::new("sculpt-invert")
+                    .disabled(!self.available)
                     .label(if self.options.invert {
                         "Invert: on"
                     } else {
@@ -339,7 +365,7 @@ impl Render for SculptPreview {
                     } else {
                         "Rotate"
                     })
-                    .disabled(self.error.is_some())
+                    .disabled(!self.available || self.error.is_some())
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.camera.rotating = !this.camera.rotating;
                         cx.notify();
@@ -347,6 +373,7 @@ impl Render for SculptPreview {
             )
             .child(
                 Button::new("sculpt-reset")
+                    .disabled(!self.available)
                     .icon(Icon::Refresh)
                     .label("Reset view")
                     .on_click(cx.listener(|this, _, _, cx| {
@@ -358,10 +385,12 @@ impl Render for SculptPreview {
                         cx.notify();
                     })),
             );
-        div().w(px(width)).flex().flex_col().gap_3()
+        div()
+            .w(px(width))
+            .flex()
+            .flex_col()
+            .gap_3()
             .child(toolbar)
             .child(viewport)
-            .child(div().text_xs().text_color(rgb(p.muted)).child("Drag to rotate · Scroll to zoom · Click to stop automatic rotation"))
-            .child(div().text_xs().text_color(rgb(p.muted)).child("Choose the sculpt type and flags to match the original object; they aren’t stored in the texture. Object scale is not included."))
     }
 }
