@@ -149,6 +149,12 @@ pub fn fingerprint(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
+/// Raw JPEG2000 downloads are prefixes of the codestream. A complete stream
+/// ends with the EOC marker, unlike the viewer's provisional size estimates.
+pub fn is_complete(bytes: &[u8]) -> bool {
+    bytes.starts_with(&[0xff, 0x4f, 0xff, 0x51]) && bytes.ends_with(&[0xff, 0xd9])
+}
+
 pub fn dimensions(bytes: &[u8]) -> Result<(u32, u32)> {
     // Validate JPEG 2000 SIZ dimensions before handing data to the decoder.
     if bytes.starts_with(&[0xff, 0x4f, 0xff, 0x51]) {
@@ -368,6 +374,7 @@ mod tests {
     fn decodes_progressive_cache_data_without_changing_complete_images() {
         let cache = Cache::open(Path::new("tests/fixtures/texturecache")).unwrap();
         let bytes = cache.read(&cache.textures[0]).unwrap();
+        assert!(is_complete(&bytes));
         let strict =
             jpeg2k::Image::from_bytes_with(&bytes, jpeg2k::DecodeParameters::new().strict(true))
                 .unwrap();
@@ -375,6 +382,7 @@ mod tests {
         assert_eq!(decode(&bytes).unwrap().into_rgba8(), expected.into_rgba8());
         for length in [bytes.len() - 2, bytes.len() / 2] {
             let partial = &bytes[..length];
+            assert!(!is_complete(partial));
             assert!(
                 jpeg2k::Image::from_bytes_with(
                     partial,

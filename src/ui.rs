@@ -10,6 +10,7 @@ use gpui_component::{
     select::{Select, SelectEvent, SelectState},
     slider::{Slider, SliderEvent, SliderState},
     spinner::Spinner,
+    switch::Switch,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -63,6 +64,7 @@ struct Settings {
     details_width: f32,
     indexing_mode: IndexingMode,
     tile_size: f32,
+    show_partial: bool,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -74,6 +76,7 @@ impl Default for Settings {
             details_width: 320.,
             indexing_mode: IndexingMode::default(),
             tile_size: TILE_DEFAULT,
+            show_partial: true,
         }
     }
 }
@@ -237,7 +240,7 @@ impl CacheCat {
                         .into_iter()
                         .find(|s| s.label() == value.as_ref())
                         .unwrap_or_default();
-                    this.visible = this.settings.sort.sort(&this.items, &this.matches);
+                    this.refresh_visible();
                     this.scroll.scroll_to_item(0, ScrollStrategy::Top);
                     this.save();
                     cx.notify();
@@ -377,6 +380,10 @@ impl CacheCat {
         self.selected = None;
         self.error = None;
         self.status = "Reading texture cache…".into();
+        let _ = self
+            .worker
+            .commands
+            .send(Command::ShowPartial(self.settings.show_partial));
         self.settings.cache = Some(path.clone());
         self.save();
         let _ = self
@@ -447,6 +454,7 @@ impl CacheCat {
                 Event::Loaded(g, items) if g == self.generation => self.items = items,
                 Event::Item(g, i, item) if g == self.generation => {
                     if let Some(slot) = self.items.get_mut(i) {
+                        sort_changed |= slot.partial != item.partial;
                         sort_changed |= slot.dimensions != item.dimensions
                             && matches!(
                                 self.settings.sort,
@@ -455,8 +463,11 @@ impl CacheCat {
                         *slot = item;
                     }
                 }
-                Event::Results(g, q, mode, visible)
-                    if g == self.generation && q == self.query && mode == self.mode =>
+                Event::Results(g, q, mode, show_partial, visible)
+                    if g == self.generation
+                        && q == self.query
+                        && mode == self.mode
+                        && show_partial == self.settings.show_partial =>
                 {
                     self.matches = visible;
                     sort_changed = true;
@@ -505,7 +516,7 @@ impl CacheCat {
             }
         }
         if sort_changed {
-            self.visible = self.settings.sort.sort(&self.items, &self.matches);
+            self.refresh_visible();
         }
         let start = (self.preview_range.start * self.columns).min(self.visible.len());
         let end = (self.preview_range.end * self.columns).min(self.visible.len());
@@ -532,6 +543,20 @@ impl CacheCat {
             cx.notify();
         }
     }
+    fn refresh_visible(&mut self) {
+        self.visible = self.settings.sort.sort(&self.items, &self.matches);
+        if !self.settings.show_partial {
+            self.visible
+                .retain(|&i| self.items[i].partial == Some(false));
+            if self
+                .selected
+                .is_some_and(|i| self.items[i].partial != Some(false))
+            {
+                self.selected = None;
+            }
+        }
+    }
+
     fn export_selected(&mut self, cx: &mut Context<Self>) {
         if self.exporting {
             return;

@@ -22,6 +22,7 @@ pub struct Item {
     pub dimensions: Option<(u32, u32)>,
     pub error: Option<String>,
     pub indexed: bool,
+    pub partial: Option<bool>,
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SearchMode {
@@ -42,12 +43,13 @@ pub enum Command {
     Search(u64, String, SearchMode),
     Download(Arc<AtomicBool>),
     Pause(bool),
+    ShowPartial(bool),
     IndexingMode(IndexingMode),
 }
 pub enum Event {
     Loaded(u64, Vec<Item>),
     Item(u64, usize, Item),
-    Results(u64, String, SearchMode, Vec<usize>),
+    Results(u64, String, SearchMode, bool, Vec<usize>),
     Status(String),
     Backend(String),
     IndexingMode(IndexingMode, bool),
@@ -101,10 +103,12 @@ struct State {
     mode: SearchMode,
     query_vector: Option<Vec<f32>>,
     paused: bool,
+    hide_partial: bool,
 }
 impl State {
     fn results(&self, tx: &Sender<Event>) {
-        let mut results: Vec<usize> = (0..self.items.len()).collect();
+        let include = |i: usize| !self.hide_partial || self.items[i].partial == Some(false);
+        let mut results: Vec<usize> = (0..self.items.len()).filter(|&i| include(i)).collect();
         if self.mode == SearchMode::Uuid {
             let uuid = self.query.trim().to_lowercase().replace('-', "");
             results.retain(|&i| {
@@ -117,7 +121,7 @@ impl State {
             });
         } else if !self.query.trim().is_empty() {
             if let Some(query) = &self.query_vector {
-                results = index::rank(&self.vectors, query, 200);
+                results = index::rank_filtered(&self.vectors, query, 200, include);
             } else {
                 results.clear();
             }
@@ -126,6 +130,7 @@ impl State {
             self.generation,
             self.query.clone(),
             self.mode,
+            !self.hide_partial,
             results,
         ));
     }
@@ -145,6 +150,7 @@ fn run(
     let _ = tx.send(Event::IndexingMode(indexing_mode, gpu_available));
     let mut model: Option<Indexers> = None;
     let mut state = State {
+        hide_partial: false,
         generation: 0,
         cache: None,
         items: vec![],
@@ -225,6 +231,7 @@ fn run(
                                     dimensions: None,
                                     error: None,
                                     indexed: false,
+                                    partial: None,
                                 })
                                 .collect();
                             let n = state.items.len();
@@ -241,6 +248,10 @@ fn run(
                     }
                 }
                 Command::Pause(paused) => state.paused = paused,
+                Command::ShowPartial(show) => {
+                    state.hide_partial = !show;
+                    state.results(tx);
+                }
                 Command::IndexingMode(mode) => {
                     indexing_mode = mode.supported(gpu_available);
                     if let Some(model) = &mut model {
@@ -312,6 +323,7 @@ fn run(
                     .read(&state.items[i].texture)?;
                 let hash = cache::fingerprint(&bytes);
                 state.items[i].dimensions = Some(cache::dimensions(&bytes)?);
+                state.items[i].partial = Some(!cache::is_complete(&bytes));
                 state.vectors[i] = index.get(&hash)?;
                 if state.vectors[i].is_none()
                     && (load_model || model.is_some())
@@ -509,6 +521,7 @@ mod tests {
                 Event::Item(1, i, item) => {
                     assert!(item.indexed);
                     assert!(item.dimensions.is_some());
+                    assert_eq!(item.partial, Some(false));
                     assert!(item.error.is_none());
                     indexed.insert(i);
                 }
@@ -537,6 +550,7 @@ mod tests {
                 dimensions: None,
                 error: None,
                 indexed: false,
+                partial: None,
             })
             .collect();
         let mut state = State {
@@ -547,17 +561,68 @@ mod tests {
         let (tx, rx) = mpsc::channel();
         state.results(&tx);
         assert!(
-            matches!(rx.recv().unwrap(), Event::Results(_, _, SearchMode::Semantic, hits) if hits.is_empty())
+            matches!(rx.recv().unwrap(), Event::Results(_, _, SearchMode::Semantic, true, hits) if hits.is_empty())
         );
         state.mode = SearchMode::Uuid;
         state.results(&tx);
         assert!(
-            matches!(rx.recv().unwrap(), Event::Results(_, _, SearchMode::Uuid, hits) if hits.len() == 4)
+            matches!(rx.recv().unwrap(), Event::Results(_, _, SearchMode::Uuid, true, hits) if hits.len() == 4)
         );
         state.query = "not-a-uuid".into();
         state.results(&tx);
         assert!(
-            matches!(rx.recv().unwrap(), Event::Results(_, _, SearchMode::Uuid, hits) if hits.is_empty())
+            matches!(rx.recv().unwrap(), Event::Results(_, _, SearchMode::Uuid, true, hits) if hits.is_empty())
         );
+    }
+
+    #[test]
+    fn partial_filter_applies_before_semantic_limit_and_to_uuid_and_browsing() {
+        let cache = Cache::open(std::path::Path::new("tests/fixtures/texturecache")).unwrap();
+        let items: Vec<_> = (0..253)
+            .map(|i| {
+                let mut texture = cache.textures[0].clone();
+                texture.id = uuid::Uuid::from_u128(i as u128 + 1);
+                Item {
+                    texture,
+                    dimensions: Some((128, 128)),
+                    error: None,
+                    indexed: true,
+                    partial: if i == 252 { None } else { Some(i < 250) },
+                }
+            })
+            .collect();
+        let mut state = State {
+            items,
+            hide_partial: true,
+            ..Default::default()
+        };
+        let (tx, rx) = mpsc::channel();
+        for mode in [SearchMode::Semantic, SearchMode::Uuid] {
+            state.mode = mode;
+            state.results(&tx);
+            assert!(
+                matches!(rx.recv().unwrap(),Event::Results(_,_,_,false,hits) if hits==[250,251])
+            );
+        }
+        state.mode = SearchMode::Semantic;
+        state.query = "texture".into();
+        state.query_vector = Some(vec![1.]);
+        state.vectors = (0..253)
+            .map(|i| Some(vec![if i < 250 { 1. } else { 0.5 }]))
+            .collect();
+        state.results(&tx);
+        assert!(matches!(rx.recv().unwrap(),Event::Results(_,_,_,false,hits) if hits==[250,251]));
+        state.hide_partial = false;
+        state.results(&tx);
+        assert!(
+            matches!(rx.recv().unwrap(),Event::Results(_,_,_,true,hits) if hits.len()==200 && hits[0]==0)
+        );
+        state.mode = SearchMode::Uuid;
+        state.query = "00000000".into();
+        state.results(&tx);
+        assert!(matches!(rx.recv().unwrap(),Event::Results(_,_,_,true,hits) if hits.len()==253));
+        state.hide_partial = true;
+        state.results(&tx);
+        assert!(matches!(rx.recv().unwrap(),Event::Results(_,_,_,false,hits) if hits==[250,251]));
     }
 }

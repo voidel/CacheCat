@@ -56,12 +56,22 @@ pub fn cosine(a: &[f32], b: &[f32]) -> f32 {
 }
 /// Score each vector once, then sort only the best matches. Index order breaks ties.
 pub fn rank(vectors: &[Option<Vec<f32>>], query: &[f32], limit: usize) -> Vec<usize> {
+    rank_filtered(vectors, query, limit, |_| true)
+}
+
+pub fn rank_filtered(
+    vectors: &[Option<Vec<f32>>],
+    query: &[f32],
+    limit: usize,
+    include: impl Fn(usize) -> bool,
+) -> Vec<usize> {
     if limit == 0 {
         return vec![];
     }
     let mut scores: Vec<_> = vectors
         .iter()
         .enumerate()
+        .filter(|(i, _)| include(*i))
         .filter_map(|(i, v)| v.as_ref().map(|v| (i, cosine(v, query))))
         .collect();
     let compare = |a: &(usize, f32), b: &(usize, f32)| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0));

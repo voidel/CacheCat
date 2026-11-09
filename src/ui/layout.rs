@@ -171,6 +171,14 @@ impl CacheCat {
                         .child(format!("{w} × {h} pixels")),
                 )
             })
+            .when(item.partial == Some(true), |panel| {
+                panel.child(
+                    div()
+                        .text_sm()
+                        .text_color(rgb(p.muted))
+                        .child("Partially downloaded"),
+                )
+            })
             .child(div().text_sm().text_color(rgb(p.muted)).child(format!(
                 "Cached data: {:.1} KB",
                 (item.texture.body_size + item.texture.image_size.min(600)) as f64 / 1024.
@@ -470,6 +478,23 @@ impl Render for CacheCat {
                             ),
                     )
                     .child(
+                        Switch::new("show-partial")
+                            .text_sm()
+                            .text_color(rgb(p.muted))
+                            .checked(self.settings.show_partial)
+                            .label("Show partial")
+                            .tooltip("Show partially downloaded textures")
+                            .flex_shrink_0()
+                            .on_click(cx.listener(|this, checked: &bool, _, cx| {
+                                this.settings.show_partial = *checked;
+                                this.refresh_visible();
+                                this.scroll.scroll_to_item(0, ScrollStrategy::Top);
+                                this.save();
+                                let _ = this.worker.commands.send(Command::ShowPartial(*checked));
+                                cx.notify();
+                            })),
+                    )
+                    .child(
                         div()
                             .w(px(220.))
                             .flex_shrink_0()
@@ -518,6 +543,15 @@ impl Render for CacheCat {
                 "Download the model to search descriptions"
             } else if semantic && indexed == 0 {
                 "Results will appear as textures are indexed"
+            } else if !self.settings.show_partial
+                && self
+                    .items
+                    .iter()
+                    .any(|item| item.partial.is_none() && item.error.is_none())
+            {
+                "Checking cache completeness…"
+            } else if !self.settings.show_partial {
+                "No matching complete textures"
             } else {
                 "No matching textures"
             };
@@ -737,5 +771,13 @@ mod tests {
         assert_eq!(settings.details_width, 320.);
         assert_eq!(settings.indexing_mode, IndexingMode::GpuCpu);
         assert_eq!(settings.tile_size, TILE_DEFAULT);
+        assert!(settings.show_partial);
+        let settings: Settings = serde_json::from_str(r#"{"show_partial":false}"#).unwrap();
+        let saved = serde_json::to_string(&settings).unwrap();
+        assert!(
+            !serde_json::from_str::<Settings>(&saved)
+                .unwrap()
+                .show_partial
+        );
     }
 }

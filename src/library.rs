@@ -186,6 +186,7 @@ mod tests {
             dimensions,
             error: None,
             indexed: false,
+            partial: None,
         })
         .collect();
         let all = [0, 1, 2];
