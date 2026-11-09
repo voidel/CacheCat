@@ -76,7 +76,7 @@ impl Default for Settings {
             details_width: 320.,
             indexing_mode: IndexingMode::default(),
             tile_size: TILE_DEFAULT,
-            show_partial: true,
+            show_partial: false,
         }
     }
 }

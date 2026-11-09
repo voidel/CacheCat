@@ -482,7 +482,7 @@ impl Render for CacheCat {
                             .text_sm()
                             .text_color(rgb(p.muted))
                             .checked(self.settings.show_partial)
-                            .label("Show partial")
+                            .label("Show partially downloaded")
                             .tooltip("Show partially downloaded textures")
                             .flex_shrink_0()
                             .on_click(cx.listener(|this, checked: &bool, _, cx| {
@@ -771,7 +771,7 @@ mod tests {
         assert_eq!(settings.details_width, 320.);
         assert_eq!(settings.indexing_mode, IndexingMode::GpuCpu);
         assert_eq!(settings.tile_size, TILE_DEFAULT);
-        assert!(settings.show_partial);
+        assert!(!settings.show_partial);
         let settings: Settings = serde_json::from_str(r#"{"show_partial":false}"#).unwrap();
         let saved = serde_json::to_string(&settings).unwrap();
         assert!(
