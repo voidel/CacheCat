@@ -97,7 +97,7 @@ impl SculptPreview {
             let mut geometry: Option<(Options, Result<Arc<Mesh>, String>)> = None;
             let mut last = Instant::now();
             loop {
-                // One frame at a time, at most 30 fps. Paused views do no raster work.
+                // One frame at a time, at most 60 fps. Paused views do no raster work.
                 let started = Instant::now();
                 let request = view.update_in(cx, |this, _, _| {
                     if this.closed {
@@ -175,7 +175,7 @@ impl SculptPreview {
                         break;
                     }
                 }
-                let delay = Duration::from_millis(33).saturating_sub(started.elapsed());
+                let delay = Duration::from_secs_f64(1. / 60.).saturating_sub(started.elapsed());
                 cx.background_executor().timer(delay).await;
             }
         })
