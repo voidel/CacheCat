@@ -179,16 +179,39 @@ pub fn dimensions(bytes: &[u8]) -> Result<(u32, u32)> {
 
 pub fn decode(bytes: &[u8]) -> Result<DynamicImage> {
     dimensions(bytes)?;
+    decode_reduced(bytes, 0)
+}
+
+/// Decode only the wavelet resolution needed by the on-screen preview.
+/// Embeddings, exports and sculpt geometry still use the original pixels.
+pub fn thumbnail(bytes: &[u8]) -> Result<image::RgbaImage> {
+    let (width, height) = dimensions(bytes)?;
+    let reduce = (width.max(height) / 256).max(1).ilog2();
+    let image = decode_reduced(bytes, reduce).or_else(|error| {
+        // Some valid streams have fewer decomposition levels than their size
+        // suggests. Do not turn a supported texture into an unavailable preview.
+        if reduce > 0 {
+            decode_reduced(bytes, 0)
+        } else {
+            Err(error)
+        }
+    })?;
+    Ok(image.thumbnail(256, 256).into_rgba8())
+}
+
+fn decode_reduced(bytes: &[u8], reduce: u32) -> Result<DynamicImage> {
     // This option is effective only with jpeg2k's `strict-mode` Cargo feature.
     // Viewer caches routinely contain progressive, partially downloaded images.
-    let decoded =
-        jpeg2k::Image::from_bytes_with(bytes, jpeg2k::DecodeParameters::new().strict(false))
-            .with_context(|| {
-                format!(
-                    "Incomplete or unsupported JPEG 2000 texture ({} cached bytes)",
-                    bytes.len()
-                )
-            })?;
+    let decoded = jpeg2k::Image::from_bytes_with(
+        bytes,
+        jpeg2k::DecodeParameters::new().strict(false).reduce(reduce),
+    )
+    .with_context(|| {
+        format!(
+            "Incomplete or unsupported JPEG 2000 texture ({} cached bytes)",
+            bytes.len()
+        )
+    })?;
     let components = decoded.components();
     if components.len() == 5 {
         // SL baked textures can carry an auxiliary fifth channel. The viewer
@@ -255,6 +278,40 @@ pub fn default_path() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn thumbnails_preserve_aspect_alpha_and_support_few_resolution_levels() {
+        // Synthetic 1024x512 five-channel gradients with six levels (reduced
+        // decode) and one level (must fall back to decoding the original).
+        for bytes in [
+            include_bytes!("../tests/fixtures/thumbnail-levels-6.j2c").as_slice(),
+            include_bytes!("../tests/fixtures/thumbnail-levels-1.j2c").as_slice(),
+        ] {
+            let full = decode(bytes).unwrap();
+            assert_eq!((full.width(), full.height()), (1024, 512));
+            let preview = thumbnail(bytes).unwrap();
+            assert_eq!(preview.dimensions(), (256, 128));
+            for (x, y, pixel) in preview.enumerate_pixels() {
+                for (actual, expected) in
+                    pixel
+                        .0
+                        .into_iter()
+                        .zip([x as u8, (y * 2) as u8, 64, x as u8])
+                {
+                    assert!(actual.abs_diff(expected) <= 3);
+                }
+            }
+            assert_eq!(
+                thumbnail(&bytes[..bytes.len() - 2]).unwrap().dimensions(),
+                (256, 128)
+            );
+        }
+        let cache = Cache::open(Path::new("tests/fixtures/texturecache")).unwrap();
+        let bytes = cache.read(&cache.textures[0]).unwrap();
+        assert!(
+            thumbnail(&bytes).unwrap() == decode(&bytes).unwrap().thumbnail(256, 256).into_rgba8()
+        );
+        assert!(thumbnail(&bytes[..42]).is_err());
+    }
     fn fixture(version: f32, entries: &[(u128, i32, i32, u32)]) -> Vec<u8> {
         let mut b = version.to_le_bytes().to_vec();
         if version == 1.71 {

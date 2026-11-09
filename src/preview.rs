@@ -74,8 +74,7 @@ impl PreviewWorker {
                     let image = match &cache.as_ref().unwrap().1 {
                         Ok(cache) => cache
                             .read(&texture)
-                            .and_then(|bytes| cache::decode(&bytes))
-                            .map(|image| image.thumbnail(256, 256).into_rgba8())
+                            .and_then(|bytes| cache::thumbnail(&bytes))
                             .map_err(|e| format!("{e:#}")),
                         Err(error) => Err(error.clone()),
                     };

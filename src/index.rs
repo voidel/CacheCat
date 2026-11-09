@@ -16,11 +16,8 @@ impl Index {
     pub fn get(&self, hash: &str) -> Result<Option<Vec<f32>>> {
         let bytes: Option<Vec<u8>> = self
             .db
-            .query_row(
-                "SELECT vector FROM embeddings WHERE hash=?1 AND model=?2",
-                params![hash, MODEL_ID],
-                |r| r.get(0),
-            )
+            .prepare_cached("SELECT vector FROM embeddings WHERE hash=?1 AND model=?2")?
+            .query_row(params![hash, MODEL_ID], |r| r.get(0))
             .optional()?;
         Ok(bytes.and_then(|b| {
             if b.len() != 768 * 4 {
@@ -41,10 +38,11 @@ impl Index {
             "Invalid embedding"
         );
         let bytes: Vec<u8> = vector.iter().flat_map(|v| v.to_le_bytes()).collect();
-        self.db.execute(
-            "INSERT OR REPLACE INTO embeddings(hash,model,vector) VALUES(?1,?2,?3)",
-            params![hash, MODEL_ID, bytes],
-        )?;
+        self.db
+            .prepare_cached(
+                "INSERT OR REPLACE INTO embeddings(hash,model,vector) VALUES(?1,?2,?3)",
+            )?
+            .execute(params![hash, MODEL_ID, bytes])?;
         Ok(())
     }
 }
@@ -52,7 +50,17 @@ pub fn cosine(a: &[f32], b: &[f32]) -> f32 {
     if a.len() != b.len() {
         return f32::NEG_INFINITY;
     }
-    a.iter().zip(b).map(|(a, b)| a * b).sum()
+    // Independent accumulators let LLVM vectorize the dot product without
+    // unsafe CPU-specific instructions or a serial dependency per component.
+    let (a_chunks, a_tail) = a.as_chunks::<8>();
+    let (b_chunks, b_tail) = b.as_chunks::<8>();
+    let mut sums = [0.; 8];
+    for (a, b) in a_chunks.iter().zip(b_chunks) {
+        for lane in 0..8 {
+            sums[lane] += a[lane] * b[lane];
+        }
+    }
+    sums.iter().sum::<f32>() + a_tail.iter().zip(b_tail).map(|(a, b)| a * b).sum::<f32>()
 }
 /// Score each vector once, then sort only the best matches. Index order breaks ties.
 pub fn rank(vectors: &[Option<Vec<f32>>], query: &[f32], limit: usize) -> Vec<usize> {
@@ -92,6 +100,24 @@ pub fn uuid_query(query: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn dot_product_matches_high_precision_reference_including_tails() {
+        for length in [0, 1, 7, 8, 9, 767, 768, 769] {
+            let a: Vec<_> = (0..length)
+                .map(|i| ((i * 127 % 997) as f32 - 498.) / 20000.)
+                .collect();
+            let b: Vec<_> = (0..length)
+                .map(|i| ((i * 31 % 991) as f32 - 495.) / 20000.)
+                .collect();
+            let expected: f64 = a
+                .iter()
+                .zip(&b)
+                .map(|(&a, &b)| f64::from(a) * f64::from(b))
+                .sum();
+            assert!((f64::from(cosine(&a, &b)) - expected).abs() < 1e-7);
+        }
+        assert_eq!(cosine(&[1.], &[]), f32::NEG_INFINITY);
+    }
     #[test]
     fn top_matches_preserve_full_sort_order_and_ties() {
         let vectors: Vec<_> = (0..1000)

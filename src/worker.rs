@@ -13,7 +13,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
         mpsc::{self, Receiver, Sender},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 #[derive(Clone, Debug)]
@@ -104,28 +104,42 @@ struct State {
     query_vector: Option<Vec<f32>>,
     paused: bool,
     hide_partial: bool,
+    results_dirty: bool,
+    last_results: Option<Instant>,
 }
 impl State {
-    fn results(&self, tx: &Sender<Event>) {
-        let include = |i: usize| !self.hide_partial || self.items[i].partial == Some(false);
-        let mut results: Vec<usize> = (0..self.items.len()).filter(|&i| include(i)).collect();
-        if self.mode == SearchMode::Uuid {
-            let uuid = self.query.trim().to_lowercase().replace('-', "");
-            results.retain(|&i| {
-                self.items[i]
-                    .texture
-                    .id
-                    .simple()
-                    .to_string()
-                    .contains(&uuid)
-            });
-        } else if !self.query.trim().is_empty() {
-            if let Some(query) = &self.query_vector {
-                results = index::rank_filtered(&self.vectors, query, 200, include);
-            } else {
-                results.clear();
-            }
+    fn flush_results(&mut self, tx: &Sender<Event>) {
+        if self.results_dirty
+            && self
+                .last_results
+                .is_none_or(|t| t.elapsed() >= Duration::from_millis(150))
+        {
+            self.results(tx);
         }
+    }
+
+    fn results(&mut self, tx: &Sender<Event>) {
+        let include = |i: usize| !self.hide_partial || self.items[i].partial == Some(false);
+        let results = if self.mode == SearchMode::Semantic && !self.query.trim().is_empty() {
+            self.query_vector.as_ref().map_or_else(Vec::new, |query| {
+                index::rank_filtered(&self.vectors, query, 200, include)
+            })
+        } else if self.mode == SearchMode::Uuid && !self.query.trim().is_empty() {
+            let uuid = self.query.trim().to_lowercase().replace('-', "");
+            (0..self.items.len())
+                .filter(|&i| include(i))
+                .filter(|&i| {
+                    self.items[i]
+                        .texture
+                        .id
+                        .simple()
+                        .encode_lower(&mut [0; 32])
+                        .contains(&uuid)
+                })
+                .collect()
+        } else {
+            (0..self.items.len()).filter(|&i| include(i)).collect()
+        };
         let _ = tx.send(Event::Results(
             self.generation,
             self.query.clone(),
@@ -133,6 +147,8 @@ impl State {
             !self.hide_partial,
             results,
         ));
+        self.results_dirty = false;
+        self.last_results = Some(Instant::now());
     }
 }
 fn run(
@@ -163,6 +179,8 @@ fn run(
         mode: SearchMode::Semantic,
         query_vector: None,
         paused: false,
+        results_dirty: false,
+        last_results: None,
     };
     let mut load_model = model::ready(&model_dir);
     let mut load_cancel: Option<Arc<AtomicBool>> = None;
@@ -170,6 +188,7 @@ fn run(
     let _ = tx.send(Event::ModelReady(load_model));
     let mut download: Option<(Receiver<Result<bool>>, Arc<AtomicBool>)> = None;
     loop {
+        state.flush_results(tx);
         if let Some((rx, cancelled)) = &download
             && let Ok(result) = rx.try_recv()
         {
@@ -221,6 +240,7 @@ fn run(
                     state.prepared.clear();
                     state.hashes.clear();
                     state.vectors.clear();
+                    state.results_dirty = false;
                     match Cache::open(&path) {
                         Ok(cache) => {
                             state.items = cache
@@ -344,8 +364,8 @@ fn run(
                 state.items[i].error = Some(format!("{e:#}"));
             }
             let _ = tx.send(Event::Item(state.generation, i, state.items[i].clone()));
+            state.results_dirty = true;
             if state.scan.len().is_multiple_of(16) {
-                state.results(tx);
                 let _ = tx.send(Event::Status("Reading cache metadata…".into()));
             }
             continue;
@@ -402,6 +422,16 @@ fn run(
             for i in batch {
                 let prepared = state.prepared.remove(&i);
                 let result = (|| -> Result<(bool, Vec<f32>)> {
+                    let hash = state.hashes[i].as_ref().unwrap();
+                    // Prepared pixels and their hash came from the same read.
+                    // Reopening the file here wastes I/O and cannot improve
+                    // that snapshot's consistency.
+                    if let Some(pixels) = prepared {
+                        return match index.get(hash)? {
+                            Some(existing) => Ok((true, existing)),
+                            None => Ok((false, pixels)),
+                        };
+                    }
                     let bytes = state
                         .cache
                         .as_ref()
@@ -413,14 +443,10 @@ fn run(
                         "Texture changed; rescan to index its latest version"
                     );
                     // Duplicate content may have been indexed since this item was queued.
-                    let hash = state.hashes[i].as_ref().unwrap();
                     if let Some(existing) = index.get(hash)? {
                         Ok((true, existing))
                     } else {
-                        let pixels = match prepared {
-                            Some(pixels) => pixels,
-                            None => model::preprocess(&cache::decode(&bytes)?),
-                        };
+                        let pixels = model::preprocess(&cache::decode(&bytes)?);
                         Ok((false, pixels))
                     }
                 })();
@@ -454,11 +480,8 @@ fn run(
                 let _ = tx.send(Event::Item(state.generation, i, state.items[i].clone()));
             }
             refresh_devices(model, &mut indexing_mode, &mut gpu_available, tx);
-            if !state.query.is_empty() {
-                state.results(tx);
-            }
+            state.results_dirty = true;
             if state.embed.len().is_multiple_of(8) {
-                state.results(tx);
                 let _ = tx.send(Event::Backend(model.backend()));
             }
         }
@@ -477,6 +500,27 @@ fn refresh_devices(model: &Indexers, mode: &mut IndexingMode, gpu: &mut bool, tx
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn background_results_coalesce_but_search_and_final_updates_are_delivered() {
+        let mut state = State::default();
+        let (tx, rx) = mpsc::channel();
+        state.results(&tx);
+        rx.recv().unwrap();
+        for _ in 0..100 {
+            state.results_dirty = true;
+            state.flush_results(&tx);
+        }
+        assert!(rx.try_recv().is_err());
+        state.query = "new search".into();
+        state.results(&tx);
+        assert!(matches!(rx.recv().unwrap(), Event::Results(_,q,_,_,_) if q=="new search"));
+        state.results_dirty = true;
+        state.last_results = Some(Instant::now() - Duration::from_secs(1));
+        state.flush_results(&tx);
+        rx.recv().unwrap();
+        state.flush_results(&tx);
+        assert!(rx.try_recv().is_err());
+    }
     #[test]
     fn cpu_only_worker_rejects_unavailable_device_selection() {
         let data = tempfile::tempdir().unwrap();

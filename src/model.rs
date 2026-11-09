@@ -612,13 +612,22 @@ pub fn inference_worker(dir: &Path, cpu: bool) -> Result<()> {
 
 pub fn preprocess(image: &DynamicImage) -> Vec<f32> {
     // Composite alpha onto neutral grey, then bicubic resize exactly to 224².
-    let rgba = image.to_rgba8();
-    let rgb = image::RgbImage::from_fn(rgba.width(), rgba.height(), |x, y| {
-        let p = rgba.get_pixel(x, y).0;
-        let a = p[3] as f32 / 255.;
-        image::Rgb([0, 1, 2].map(|c| (p[c] as f32 * a + 127.5 * (1. - a)).round() as u8))
-    });
-    let resized = image::imageops::resize(&rgb, 224, 224, FilterType::CatmullRom);
+    let composited;
+    let rgb = if let Some(rgb) = image.as_rgb8() {
+        rgb
+    } else {
+        let rgba = image.to_rgba8();
+        composited = image::RgbImage::from_fn(rgba.width(), rgba.height(), |x, y| {
+            let p = rgba.get_pixel(x, y).0;
+            if p[3] == 255 {
+                return image::Rgb([p[0], p[1], p[2]]);
+            }
+            let a = p[3] as f32 / 255.;
+            image::Rgb([0, 1, 2].map(|c| (p[c] as f32 * a + 127.5 * (1. - a)).round() as u8))
+        });
+        &composited
+    };
+    let resized = image::imageops::resize(rgb, 224, 224, FilterType::CatmullRom);
     let mut data = vec![0.; 3 * 224 * 224];
     for (i, p) in resized.pixels().enumerate() {
         for c in 0..3 {
@@ -643,6 +652,29 @@ pub fn normalize(mut values: Vec<f32>) -> Result<Vec<f32>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn preprocessing_preserves_rgb_and_alpha_compositing() {
+        let rgb = image::RgbImage::from_fn(317, 259, |x, y| {
+            image::Rgb([x as u8, y as u8, (x + y) as u8])
+        });
+        let image = DynamicImage::ImageRgb8(rgb.clone());
+        assert_eq!(
+            preprocess(&image),
+            preprocess(&DynamicImage::ImageRgba8(image.to_rgba8()))
+        );
+        let rgba = image::RgbaImage::from_fn(317, 259, |x, y| {
+            image::Rgba([x as u8, y as u8, (x + y) as u8, (x * y) as u8])
+        });
+        let composited = image::RgbImage::from_fn(317, 259, |x, y| {
+            let p = rgba.get_pixel(x, y).0;
+            let a = p[3] as f32 / 255.;
+            image::Rgb([0, 1, 2].map(|c| (p[c] as f32 * a + 127.5 * (1. - a)).round() as u8))
+        });
+        assert_eq!(
+            preprocess(&DynamicImage::ImageRgba8(rgba)),
+            preprocess(&DynamicImage::ImageRgb8(composited))
+        );
+    }
     #[test]
     fn cancelled_download_removes_partial_and_retry_keeps_completed_files() {
         use std::{net::TcpListener, sync::Arc, time::Instant};

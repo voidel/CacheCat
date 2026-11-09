@@ -236,12 +236,8 @@ impl Render for CacheCat {
                 ScrollStrategy::Top,
             );
         }
-        let indexed = self.items.iter().filter(|i| i.indexed).count();
-        let unavailable = self
-            .items
-            .iter()
-            .filter(|i| i.error.is_some() && !i.indexed)
-            .count();
+        let indexed = self.counts.indexed;
+        let unavailable = self.counts.unavailable;
         let pending = self.items.len().saturating_sub(indexed + unavailable);
         let semantic = !self.query.trim().is_empty() && self.mode == SearchMode::Semantic;
         let folder = self
@@ -543,12 +539,7 @@ impl Render for CacheCat {
                 "Download the model to search descriptions"
             } else if semantic && indexed == 0 {
                 "Results will appear as textures are indexed"
-            } else if !self.settings.show_partial
-                && self
-                    .items
-                    .iter()
-                    .any(|item| item.partial.is_none() && item.error.is_none())
-            {
+            } else if !self.settings.show_partial && self.counts.unscanned > 0 {
                 "Checking cache completeness…"
             } else if !self.settings.show_partial {
                 "No matching complete textures"
@@ -736,6 +727,54 @@ impl Render for CacheCat {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[::core::prelude::v1::test]
+    fn progress_counts_follow_item_replacement_and_recovery() {
+        let cache =
+            cachecat::cache::Cache::open(std::path::Path::new("tests/fixtures/texturecache"))
+                .unwrap();
+        let mut counts = ItemCounts::default();
+        let mut items: Vec<_> = cache
+            .textures
+            .into_iter()
+            .map(|texture| Item {
+                texture,
+                dimensions: None,
+                error: None,
+                indexed: false,
+                partial: None,
+            })
+            .collect();
+        for item in &items {
+            counts.add(item);
+        }
+        for (i, indexed, error, partial) in [
+            (0, false, Some("decode failed"), None),
+            (1, true, None, Some(false)),
+            (0, true, None, Some(true)),
+            (2, false, None, Some(false)),
+        ] {
+            counts.remove(&items[i]);
+            items[i].indexed = indexed;
+            items[i].error = error.map(str::to_string);
+            items[i].partial = partial;
+            counts.add(&items[i]);
+            assert_eq!(counts.indexed, items.iter().filter(|i| i.indexed).count());
+            assert_eq!(
+                counts.unavailable,
+                items
+                    .iter()
+                    .filter(|i| i.error.is_some() && !i.indexed)
+                    .count()
+            );
+            assert_eq!(
+                counts.unscanned,
+                items
+                    .iter()
+                    .filter(|i| i.partial.is_none() && i.error.is_none())
+                    .count()
+            );
+        }
+    }
     #[::core::prelude::v1::test]
     fn zoom_tiles_fit_each_row_without_exceeding_thumbnail_size() {
         for width in [80., 240., 368., 1000., 1920.] {

@@ -80,6 +80,26 @@ impl Default for Settings {
         }
     }
 }
+/// Updated with item events, rather than scanning the catalogue every frame.
+#[derive(Default)]
+struct ItemCounts {
+    indexed: usize,
+    unavailable: usize,
+    unscanned: usize,
+}
+impl ItemCounts {
+    fn add(&mut self, item: &Item) {
+        self.indexed += usize::from(item.indexed);
+        self.unavailable += usize::from(item.error.is_some() && !item.indexed);
+        self.unscanned += usize::from(item.partial.is_none() && item.error.is_none());
+    }
+    fn remove(&mut self, item: &Item) {
+        self.indexed -= usize::from(item.indexed);
+        self.unavailable -= usize::from(item.error.is_some() && !item.indexed);
+        self.unscanned -= usize::from(item.partial.is_none() && item.error.is_none());
+    }
+}
+
 struct CacheCat {
     worker: Worker,
     previews: previews::MemoryPreviews,
@@ -98,6 +118,7 @@ struct CacheCat {
     zoom_anchor: Option<usize>,
     zoom_changed: Option<Instant>,
     items: Vec<Item>,
+    counts: ItemCounts,
     matches: Vec<usize>,
     visible: Vec<usize>,
     selected: Option<usize>,
@@ -283,6 +304,7 @@ impl CacheCat {
             zoom_anchor: None,
             zoom_changed: None,
             items: vec![],
+            counts: ItemCounts::default(),
             matches: vec![],
             visible: vec![],
             selected: None,
@@ -374,6 +396,7 @@ impl CacheCat {
     fn open(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         self.generation += 1;
         self.items.clear();
+        self.counts = ItemCounts::default();
         self.preview_range = 0..0;
         self.visible.clear();
         self.matches.clear();
@@ -451,9 +474,17 @@ impl CacheCat {
         for event in self.worker.events.try_iter().take(512) {
             changed = true;
             match event {
-                Event::Loaded(g, items) if g == self.generation => self.items = items,
+                Event::Loaded(g, items) if g == self.generation => {
+                    self.counts = ItemCounts::default();
+                    for item in &items {
+                        self.counts.add(item);
+                    }
+                    self.items = items;
+                }
                 Event::Item(g, i, item) if g == self.generation => {
                     if let Some(slot) = self.items.get_mut(i) {
+                        self.counts.remove(slot);
+                        self.counts.add(&item);
                         sort_changed |= slot.partial != item.partial;
                         sort_changed |= slot.dimensions != item.dimensions
                             && matches!(
@@ -544,17 +575,25 @@ impl CacheCat {
         }
     }
     fn refresh_visible(&mut self) {
-        self.visible = self.settings.sort.sort(&self.items, &self.matches);
-        if !self.settings.show_partial {
-            self.visible
-                .retain(|&i| self.items[i].partial == Some(false));
+        let filtered;
+        let matches = if self.settings.show_partial {
+            &self.matches
+        } else {
+            filtered = self
+                .matches
+                .iter()
+                .copied()
+                .filter(|&i| self.items[i].partial == Some(false))
+                .collect::<Vec<_>>();
             if self
                 .selected
                 .is_some_and(|i| self.items[i].partial != Some(false))
             {
                 self.selected = None;
             }
-        }
+            &filtered
+        };
+        self.visible = self.settings.sort.sort(&self.items, matches);
     }
 
     fn export_selected(&mut self, cx: &mut Context<Self>) {
