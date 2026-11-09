@@ -1,14 +1,14 @@
-Faster local indexing with batched SigLIP inference.
+CacheCat now shows its version wherever you need to identify a build.
 
-- Process up to eight images per GPU batch or four per CPU batch. The choices remain **GPU** and **CPU**; there is no combined mode.
-- Prepare embeddings from small decoded images instead of fully decoding large textures. Exports and sculpt previews still use the original resolution.
-- Retry smaller batches when a device runs out of resources, and preserve successful items if an individual image fails.
-- Keep search, pause and device changes responsive between image-preparation steps.
+- The desktop window title includes **v0.1.2**.
+- Release executables and archive filenames include **0.1.2**, for example `cachecat-0.1.2.exe` inside `cachecat-0.1.2-windows-x86_64.zip`.
+- Windows file properties include the file and product version. macOS bundle metadata and platform launchers use the same version.
+- Release checks now launch the packaged application, verify its version and read the synthetic cache before creating a draft release.
 
-On a local 96-texture comparison, indexing improved from approximately 19 to 60–64 images/sec. Results depend on hardware and cache contents. Smaller decoded inputs and quantized batches can produce slightly different search rankings.
+This retains v0.1.1's faster batched indexing and existing GPU/CPU choices.
 
-Download the archive for your platform and extract it before launching. Keep your existing portable `data` folder when upgrading; saved embeddings remain usable and the model does not need to be downloaded again. SHA-256 checksums are included.
+Extract the archive before launching. When upgrading, keep your existing portable `data` folder beside the new executable (beside `CacheCat.app` on macOS). Saved embeddings and downloaded models remain usable. SHA-256 checksums are included.
 
-macOS bundles are ad-hoc signed, not Apple notarized. Linux requires the [documented system libraries](https://github.com/voidel/CacheCat/blob/v0.1.1/docs/development.md#desktop); Windows requires the Visual C++ runtime.
+macOS bundles are ad-hoc signed, not Apple notarized. Linux requires the [documented system libraries](https://github.com/voidel/CacheCat/blob/v0.1.2/docs/development.md#desktop); Windows requires the Visual C++ runtime.
 
-Only export or reuse assets where you have the necessary rights or permission, and comply with Linden Lab's terms. See [Responsible use](https://github.com/voidel/CacheCat/blob/v0.1.1/README.md#responsible-use).
+Only export or reuse assets where you have the necessary rights or permission, and comply with Linden Lab's terms. See [Responsible use](https://github.com/voidel/CacheCat/blob/v0.1.2/README.md#responsible-use).

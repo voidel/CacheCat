@@ -42,5 +42,14 @@ Push a `v*` tag to assemble platform archives and SHA-256
 checksums into a **draft** GitHub release. Review artifacts before publishing.
 No model files or user caches are included.
 
+`Cargo.toml` is the version source for the window title, Windows file properties,
+packaged executables and archive names. Bump the matching `cachecat` entry in
+`Cargo.lock` with it. For example, version 0.1.2 produces
+`cachecat-0.1.2-windows-x86_64.zip` containing `cachecat-0.1.2.exe`.
+Native Cargo build outputs keep Cargo's standard `cachecat` name.
+CI runs `tools/verify-package.py` against the extracted archive and rejects a
+release tag that differs from the Cargo version. Launchers and macOS bundle
+metadata point to the versioned executable.
+
 Archives contain the application, required runtime libraries, platform launchers
 and licence notices. The README and developer documentation remain in this repository.

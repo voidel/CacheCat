@@ -783,7 +783,13 @@ pub fn run(path: Option<PathBuf>, data: PathBuf, cpu: bool, legacy: Option<PathB
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
                     window_min_size: Some(size(px(800.), px(580.))),
                     titlebar: Some(TitlebarOptions {
-                        title: Some("CacheCat — Second Life Cache Viewer".into()),
+                        title: Some(
+                            format!(
+                                "CacheCat v{} — Second Life Cache Viewer",
+                                env!("CARGO_PKG_VERSION")
+                            )
+                            .into(),
+                        ),
                         ..Default::default()
                     }),
                     ..Default::default()

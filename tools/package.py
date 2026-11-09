@@ -23,12 +23,13 @@ if not packages.resolve().is_relative_to(root):
 # previously launched build must never be included in a release archive.
 staging_parent = tempfile.TemporaryDirectory(prefix="build-", dir=packages)
 assert Path(staging_parent.name).resolve().is_relative_to(packages.resolve())
-staging = Path(staging_parent.name) / f"cachecat-{args.platform}"
+staging = Path(staging_parent.name) / f"cachecat-{version}-{args.platform}"
 staging.mkdir(parents=True, exist_ok=True)
 output = root / "dist"
 output.mkdir(exist_ok=True)
 windows = args.platform.startswith("windows")
 mac = args.platform.startswith("macos")
+packaged_exe = f"cachecat-{version}" + (".exe" if windows else "")
 if mac:
     contents = staging / "CacheCat.app" / "Contents"
     binary_dir = contents / "MacOS"
@@ -37,11 +38,11 @@ if mac:
     resources.mkdir()
     shutil.copy2(root / "assets" / "cachecat.icns", resources / "cachecat.icns")
     with (contents / "Info.plist").open("wb") as file:
-        plistlib.dump({"CFBundleName": "CacheCat", "CFBundleDisplayName": "CacheCat", "CFBundleIdentifier": "zone.pom.cachecat", "CFBundleExecutable": "cachecat", "CFBundleIconFile": "cachecat.icns", "CFBundlePackageType": "APPL", "CFBundleShortVersionString": version, "CFBundleVersion": version, "LSMinimumSystemVersion": "12.0", "NSHighResolutionCapable": True}, file)
+        plistlib.dump({"CFBundleName": "CacheCat", "CFBundleDisplayName": f"CacheCat {version}", "CFBundleIdentifier": "zone.pom.cachecat", "CFBundleExecutable": packaged_exe, "CFBundleIconFile": "cachecat.icns", "CFBundlePackageType": "APPL", "CFBundleShortVersionString": version, "CFBundleVersion": version, "LSMinimumSystemVersion": "12.0", "NSHighResolutionCapable": True}, file)
 else:
     binary_dir = staging
 exe = "cachecat.exe" if windows else "cachecat"
-shutil.copy2(source / exe, binary_dir / exe)
+shutil.copy2(source / exe, binary_dir / packaged_exe)
 for pattern in ("*.dll", "*.dylib", "*.so*"):
     for library in source.glob(pattern):
         if library.is_file(): shutil.copy2(library.resolve(), binary_dir / library.name)
@@ -52,9 +53,9 @@ if mac:
     subprocess.run(["codesign", "--force", "--deep", "--sign", "-", str(staging / "CacheCat.app")], check=True)
 if not windows:
     launcher = staging / "run-cachecat"
-    executable = "CacheCat.app/Contents/MacOS/cachecat" if mac else "cachecat"
+    executable = f"CacheCat.app/Contents/MacOS/{packaged_exe}" if mac else packaged_exe
     launcher.write_text('#!/bin/sh\nHERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)\nexport LD_LIBRARY_PATH="$HERE${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"\nexec "$HERE/' + executable + '" "$@"\n')
     launcher.chmod(0o755)
-archive = shutil.make_archive(str(output / f"cachecat-{args.platform}"), "zip" if windows else "gztar", staging.parent, staging.name)
+archive = shutil.make_archive(str(output / f"cachecat-{version}-{args.platform}"), "zip" if windows else "gztar", staging.parent, staging.name)
 staging_parent.cleanup()
 print(archive)

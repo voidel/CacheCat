@@ -49,6 +49,8 @@ jobs:
         run: ./target/release/cachecat --cache tests/fixtures/texturecache --inspect 4
       - name: Package native application
         run: python tools/package.py --platform ${{ matrix.platform }}
+      - name: Verify packaged application and release version
+        run: python tools/verify-package.py
       - uses: actions/upload-artifact@v4
         with:
           name: cachecat-${{ matrix.platform }}
