@@ -1,21 +1,14 @@
-CacheCat is a local-first Second Life / Firestorm texture-cache explorer.
+Faster local indexing with batched SigLIP inference.
 
-- Native Rust/GPUI viewer for Windows, macOS, and Linux.
-- Newest-first texture grid, UUID filtering, description search, and system-aware themes.
-- Embedding progress with immediate search over completed items and partial-result notices.
-- Isolated native inference process with CPU recovery when an accelerator fails.
+- Process up to eight images per GPU batch or four per CPU batch. The choices remain **GPU** and **CPU**; there is no combined mode.
+- Prepare embeddings from small decoded images instead of fully decoding large textures. Exports and sculpt previews still use the original resolution.
+- Retry smaller batches when a device runs out of resources, and preserve successful items if an individual image fails.
+- Keep search, pause and device changes responsive between image-preparation steps.
 
-Choose the matching platform archive, extract it, and run CacheCat. macOS archives
-contain an app bundle (ad-hoc signed, not Apple notarized). Linux requires X11 or
-Wayland and the system graphics/font libraries listed in the
-[development guide](https://github.com/voidel/CacheCat/blob/main/docs/development.md#desktop). Windows needs
-a current supported Windows installation with the Visual C++ runtime.
+On a local 96-texture comparison, indexing improved from approximately 19 to 60–64 images/sec. Results depend on hardware and cache contents. Smaller decoded inputs and quantized batches can produce slightly different search rankings.
 
-This is a portable application. Its `data` folder lives beside the executable
-(beside the `.app` bundle on macOS). Keep that folder when upgrading or moving the
-application. First launch copies an existing profile-based index into portable
-storage without deleting the original. Explicit `--data-dir` overrides skip import.
+Download the archive for your platform and extract it before launching. Keep your existing portable `data` folder when upgrading; saved embeddings remain usable and the model does not need to be downloaded again. SHA-256 checksums are included.
 
-Model downloads are approximately 213 MB. Cache contents stay local. Viewer caches
-can contain incomplete files, which are reported separately. GPU availability and
-operator support vary; CPU fallback is always provided. Search is available while indexing continues, with a notice when results are partial.
+macOS bundles are ad-hoc signed, not Apple notarized. Linux requires the [documented system libraries](https://github.com/voidel/CacheCat/blob/v0.1.1/docs/development.md#desktop); Windows requires the Visual C++ runtime.
+
+Only export or reuse assets where you have the necessary rights or permission, and comply with Linden Lab's terms. See [Responsible use](https://github.com/voidel/CacheCat/blob/v0.1.1/README.md#responsible-use).

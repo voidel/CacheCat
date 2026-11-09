@@ -1,6 +1,6 @@
 [package]
 name = "cachecat"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 license = "GPL-3.0-only"
 description = "A better Second Life Cache Viewer. Lightweight and dependable with semantic image search."
@@ -45,3 +45,7 @@ xattr = { path = "vendor/xattr" }
 [profile.release]
 lto = "thin"
 strip = true
+
+[[test]]
+name = "inference_batches"
+harness = false

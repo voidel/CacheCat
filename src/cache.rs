@@ -182,9 +182,9 @@ pub fn decode(bytes: &[u8]) -> Result<DynamicImage> {
     decode_reduced(bytes, 0)
 }
 
-/// Decode only the wavelet resolution needed by the on-screen preview.
-/// Embeddings, exports and sculpt geometry still use the original pixels.
-pub fn thumbnail(bytes: &[u8]) -> Result<image::RgbaImage> {
+/// Decode only the wavelet resolution needed for previews and SigLIP inputs.
+/// Keep small originals intact; exports and sculpt geometry use `decode`.
+pub fn decode_preview(bytes: &[u8]) -> Result<DynamicImage> {
     let (width, height) = dimensions(bytes)?;
     let reduce = (width.max(height) / 256).max(1).ilog2();
     let image = decode_reduced(bytes, reduce).or_else(|error| {
@@ -196,7 +196,15 @@ pub fn thumbnail(bytes: &[u8]) -> Result<image::RgbaImage> {
             Err(error)
         }
     })?;
-    Ok(image.thumbnail(256, 256).into_rgba8())
+    Ok(if image.width().max(image.height()) > 256 {
+        image.thumbnail(256, 256)
+    } else {
+        image
+    })
+}
+
+pub fn thumbnail(bytes: &[u8]) -> Result<image::RgbaImage> {
+    Ok(decode_preview(bytes)?.thumbnail(256, 256).into_rgba8())
 }
 
 fn decode_reduced(bytes: &[u8], reduce: u32) -> Result<DynamicImage> {
@@ -307,6 +315,11 @@ mod tests {
         }
         let cache = Cache::open(Path::new("tests/fixtures/texturecache")).unwrap();
         let bytes = cache.read(&cache.textures[0]).unwrap();
+        // Embedding preparation does not enlarge a small source before SigLIP's
+        // own resize, while UI thumbnails can still fill larger tiles.
+        assert!(
+            decode_preview(&bytes).unwrap().into_rgba8() == decode(&bytes).unwrap().into_rgba8()
+        );
         assert!(
             thumbnail(&bytes).unwrap() == decode(&bytes).unwrap().thumbnail(256, 256).into_rgba8()
         );

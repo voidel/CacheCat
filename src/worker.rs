@@ -323,7 +323,7 @@ fn run(
             continue;
         }
         // Scan headers and saved embeddings without decoding off-screen previews.
-        // Full image decoding happens only when an embedding is actually missing.
+        // Small image decoding happens only when an embedding is actually missing.
         let scanned = state.items.len() - state.scan.len();
         let scan_turn = scanned < 8
             || !load_model
@@ -349,8 +349,7 @@ fn run(
                     && (load_model || model.is_some())
                     && state.prepared.len() < 16
                 {
-                    let image = cache::decode(&bytes)?;
-                    state.items[i].dimensions = Some((image.width(), image.height()));
+                    let image = cache::decode_preview(&bytes)?;
                     state.prepared.insert(i, model::preprocess(&image));
                 }
                 state.items[i].indexed = state.vectors[i].is_some();
@@ -412,6 +411,56 @@ fn run(
             && let Some(model) = model.as_mut()
             && !state.embed.is_empty()
         {
+            // A model downloaded after the catalogue scan has no prepared
+            // inputs yet. Prepare one per loop so search/pause/device commands
+            // are serviced between decodes, rather than after a whole batch.
+            if let Some(i) = state
+                .embed
+                .iter()
+                .take(model.batch_size())
+                .copied()
+                .find(|i| !state.prepared.contains_key(i))
+            {
+                let result = (|| -> Result<Option<Vec<f32>>> {
+                    let hash = state.hashes[i].as_ref().unwrap();
+                    if let Some(existing) = index.get(hash)? {
+                        return Ok(Some(existing));
+                    }
+                    let bytes = state
+                        .cache
+                        .as_ref()
+                        .unwrap()
+                        .read(&state.items[i].texture)?;
+                    anyhow::ensure!(
+                        cache::fingerprint(&bytes) == *hash,
+                        "Texture changed; rescan to index its latest version"
+                    );
+                    state
+                        .prepared
+                        .insert(i, model::preprocess(&cache::decode_preview(&bytes)?));
+                    Ok(None)
+                })();
+                match result {
+                    Ok(None) => {}
+                    Ok(Some(vector)) => {
+                        state.vectors[i] = Some(vector);
+                        state.items[i].indexed = true;
+                        state.items[i].error = None;
+                        if let Some(position) = state.embed.iter().position(|&queued| queued == i) {
+                            state.embed.remove(position);
+                        }
+                    }
+                    Err(error) => {
+                        state.items[i].error = Some(format!("Indexing: {error:#}"));
+                        if let Some(position) = state.embed.iter().position(|&queued| queued == i) {
+                            state.embed.remove(position);
+                        }
+                    }
+                }
+                let _ = tx.send(Event::Item(state.generation, i, state.items[i].clone()));
+                state.results_dirty = true;
+                continue;
+            }
             since_embedding = 0;
             let batch: Vec<_> = (0..model.batch_size())
                 .filter_map(|_| state.embed.pop_front())
@@ -432,23 +481,7 @@ fn run(
                             None => Ok((false, pixels)),
                         };
                     }
-                    let bytes = state
-                        .cache
-                        .as_ref()
-                        .unwrap()
-                        .read(&state.items[i].texture)?;
-                    // Viewer may update this entry while CacheCat is open.
-                    anyhow::ensure!(
-                        Some(&cache::fingerprint(&bytes)) == state.hashes[i].as_ref(),
-                        "Texture changed; rescan to index its latest version"
-                    );
-                    // Duplicate content may have been indexed since this item was queued.
-                    if let Some(existing) = index.get(hash)? {
-                        Ok((true, existing))
-                    } else {
-                        let pixels = model::preprocess(&cache::decode(&bytes)?);
-                        Ok((false, pixels))
-                    }
+                    anyhow::bail!("Missing prepared image")
                 })();
                 match result {
                     Ok((true, vector)) => ready.push((i, Ok(vector))),

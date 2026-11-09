@@ -1,5 +1,6 @@
 """Package the current native build, following symlinks for runtime libraries."""
 import argparse
+import json
 import plistlib
 import shutil
 import subprocess
@@ -11,6 +12,8 @@ parser.add_argument("--platform", required=True, choices=["windows-x86_64", "mac
 parser.add_argument("--profile", default="release", choices=["release", "debug"])
 args = parser.parse_args()
 root = Path(__file__).resolve().parents[1]
+metadata = json.loads(subprocess.check_output(["cargo", "metadata", "--locked", "--no-deps", "--format-version", "1"], cwd=root))
+version = next(package["version"] for package in metadata["packages"] if package["name"] == "cachecat")
 source = root / "target" / args.profile
 packages = root / ".local" / "packages"
 packages.mkdir(parents=True, exist_ok=True)
@@ -34,7 +37,7 @@ if mac:
     resources.mkdir()
     shutil.copy2(root / "assets" / "cachecat.icns", resources / "cachecat.icns")
     with (contents / "Info.plist").open("wb") as file:
-        plistlib.dump({"CFBundleName": "CacheCat", "CFBundleDisplayName": "CacheCat", "CFBundleIdentifier": "zone.pom.cachecat", "CFBundleExecutable": "cachecat", "CFBundleIconFile": "cachecat.icns", "CFBundlePackageType": "APPL", "CFBundleShortVersionString": "0.1.0", "CFBundleVersion": "1", "LSMinimumSystemVersion": "12.0", "NSHighResolutionCapable": True}, file)
+        plistlib.dump({"CFBundleName": "CacheCat", "CFBundleDisplayName": "CacheCat", "CFBundleIdentifier": "zone.pom.cachecat", "CFBundleExecutable": "cachecat", "CFBundleIconFile": "cachecat.icns", "CFBundlePackageType": "APPL", "CFBundleShortVersionString": version, "CFBundleVersion": version, "LSMinimumSystemVersion": "12.0", "NSHighResolutionCapable": True}, file)
 else:
     binary_dir = staging
 exe = "cachecat.exe" if windows else "cachecat"

@@ -75,7 +75,10 @@ impl Indexers {
     }
 
     pub fn batch_size(&self) -> usize {
-        1
+        match (&self.gpu, self.mode) {
+            (Some(gpu), IndexingMode::Gpu) => gpu.batch_size(),
+            _ => self.cpu.batch_size(),
+        }
     }
 
     pub fn backend(&self) -> String {
@@ -102,13 +105,21 @@ impl Indexers {
     /// so changing devices does not need to reload the model.
     pub fn images(&mut self, pixels: Vec<Vec<f32>>) -> Vec<Result<Vec<f32>>> {
         assert!(pixels.len() <= self.batch_size());
-        let results = pixels
-            .into_iter()
-            .map(|pixels| match (&mut self.gpu, self.mode) {
-                (Some(gpu), IndexingMode::Gpu) => gpu.image_prepared(pixels),
-                _ => self.cpu.image_prepared(pixels),
-            })
-            .collect();
+        let count = pixels.len();
+        let model = match (&mut self.gpu, self.mode) {
+            (Some(gpu), IndexingMode::Gpu) => gpu,
+            _ => &mut self.cpu,
+        };
+        let results = match model.images_prepared(&pixels) {
+            Ok(vectors) => vectors.into_iter().map(Ok).collect(),
+            // Isolate a genuinely bad image after smaller-batch/device recovery
+            // so one failure cannot mark all the other textures unavailable.
+            Err(_) if count > 1 => pixels
+                .into_iter()
+                .map(|pixels| model.image_prepared(pixels))
+                .collect(),
+            Err(error) => vec![Err(error)],
+        };
         self.reconcile();
         results
     }

@@ -351,14 +351,15 @@ impl Engine {
     }
 
     fn image_inner(&mut self, pixels: Vec<f32>) -> Result<Vec<f32>> {
-        let input = Tensor::from_array(([1, 3, 224, 224], pixels))?;
+        let batch = image_count(pixels.len())?;
+        let input = Tensor::from_array(([batch, 3, 224, 224], pixels))?;
         let outputs = self.vision.run(ort::inputs!["pixel_values"=>input])?;
-        normalize(
-            outputs["pooler_output"]
-                .try_extract_tensor::<f32>()?
-                .1
-                .to_vec(),
-        )
+        let (shape, values) = outputs["pooler_output"].try_extract_tensor::<f32>()?;
+        ensure!(
+            shape.len() == 2 && shape[0] == batch as i64 && shape[1] == 768,
+            "Unexpected SigLIP batch output shape"
+        );
+        normalize_images(values, batch)
     }
     pub fn text(&mut self, query: &str) -> Result<Vec<f32>> {
         let text = query
@@ -400,12 +401,37 @@ pub struct Model {
     dir: PathBuf,
     cpu: bool,
     pub backend: String,
+    batch_size: usize,
 }
 enum Request {
     Image(Vec<f32>),
     Text(String),
 }
 const IMAGE_FLOATS: usize = 3 * 224 * 224;
+const GPU_BATCH_SIZE: usize = 8;
+const CPU_BATCH_SIZE: usize = 4;
+
+fn image_count(floats: usize) -> Result<usize> {
+    ensure!(
+        floats > 0
+            && floats.is_multiple_of(IMAGE_FLOATS)
+            && floats <= GPU_BATCH_SIZE * IMAGE_FLOATS,
+        "Invalid image tensor size"
+    );
+    Ok(floats / IMAGE_FLOATS)
+}
+
+fn normalize_images(values: &[f32], batch: usize) -> Result<Vec<f32>> {
+    ensure!(
+        (1..=GPU_BATCH_SIZE).contains(&batch) && values.len() == batch * 768,
+        "Unexpected SigLIP batch output size"
+    );
+    let mut result = Vec::with_capacity(values.len());
+    for row in values.as_chunks::<768>().0.iter() {
+        result.extend(normalize(row.to_vec())?);
+    }
+    Ok(result)
+}
 
 // One bounded binary frame per request. Writing JSON directly to ChildStdin
 // previously issued a pipe write for practically every pixel value and comma.
@@ -413,10 +439,10 @@ fn write_request(mut writer: impl Write, request: &Request) -> Result<()> {
     let mut frame = Vec::new();
     match request {
         Request::Image(pixels) => {
-            ensure!(pixels.len() == IMAGE_FLOATS, "Invalid image tensor size");
-            frame.reserve(5 + IMAGE_FLOATS * 4);
+            image_count(pixels.len())?;
+            frame.reserve(5 + pixels.len() * 4);
             frame.push(1);
-            frame.extend((IMAGE_FLOATS as u32 * 4).to_le_bytes());
+            frame.extend((pixels.len() as u32 * 4).to_le_bytes());
             frame.extend(pixels.iter().flat_map(|v| v.to_le_bytes()));
         }
         Request::Text(text) => {
@@ -440,7 +466,8 @@ fn read_request(mut reader: impl Read) -> Result<Option<Request>> {
     reader.read_exact(&mut length)?;
     let length = u32::from_le_bytes(length) as usize;
     ensure!(
-        (tag[0] == 1 && length == IMAGE_FLOATS * 4) || (tag[0] == 2 && length <= 1024 * 1024),
+        (tag[0] == 1 && length.is_multiple_of(4) && image_count(length / 4).is_ok())
+            || (tag[0] == 2 && length <= 1024 * 1024),
         "Invalid inference request frame"
     );
     let mut bytes = vec![0; length];
@@ -465,6 +492,9 @@ struct Response {
     error: Option<String>,
 }
 impl Model {
+    pub fn batch_size(&self) -> usize {
+        self.batch_size
+    }
     pub fn accelerated(&self) -> bool {
         !self.backend.starts_with("CPU")
     }
@@ -506,12 +536,18 @@ impl Model {
             dir: dir.to_path_buf(),
             cpu,
             backend: String::new(),
+            batch_size: 1,
         };
         let response = model.read()?;
         if let Some(e) = response.error {
             anyhow::bail!(e);
         }
         model.backend = response.backend;
+        model.batch_size = if model.accelerated() {
+            GPU_BATCH_SIZE
+        } else {
+            CPU_BATCH_SIZE
+        };
         Ok(model)
     }
     fn read(&mut self) -> Result<Response> {
@@ -535,6 +571,30 @@ impl Model {
             response.vector.context("No embedding returned")
         })();
         match result {
+            Err(_) if matches!(request, Request::Image(pixels) if pixels.len() > IMAGE_FLOATS) => {
+                let Request::Image(pixels) = request else {
+                    unreachable!()
+                };
+                // A batch can exceed a provider's memory/shape support or crash
+                // its driver. Restart the isolated helper and halve the batch
+                // before giving up on GPU inference. Keep the smaller limit for
+                // subsequent jobs and retain every image's original position.
+                let smaller = (pixels.len() / IMAGE_FLOATS / 2).max(1);
+                let _ = self.child.kill();
+                let _ = self.child.wait();
+                let mut replacement = Self::load(&self.dir, self.cpu || !self.accelerated())?;
+                replacement.batch_size = replacement.batch_size.min(self.batch_size).min(smaller);
+                *self = replacement;
+                let mut vectors = Vec::with_capacity(pixels.len() / IMAGE_FLOATS * 768);
+                // The limit may shrink again while processing a chunk.
+                let mut offset = 0;
+                while offset < pixels.len() {
+                    let end = (offset + self.batch_size * IMAGE_FLOATS).min(pixels.len());
+                    vectors.extend(self.request(&Request::Image(pixels[offset..end].to_vec()))?);
+                    offset = end;
+                }
+                Ok(vectors)
+            }
             Err(_) if !self.cpu => {
                 let dir = self.dir.clone();
                 *self = Self::spawn(&dir, true)?;
@@ -549,7 +609,29 @@ impl Model {
         self.image_prepared(preprocess(image))
     }
     pub fn image_prepared(&mut self, pixels: Vec<f32>) -> Result<Vec<f32>> {
+        ensure!(pixels.len() == IMAGE_FLOATS, "Invalid image tensor size");
         self.request(&Request::Image(pixels))
+    }
+    pub fn images_prepared(&mut self, pixels: &[Vec<f32>]) -> Result<Vec<Vec<f32>>> {
+        if pixels.is_empty() {
+            return Ok(vec![]);
+        }
+        let count = pixels.len();
+        ensure!(
+            count <= self.batch_size && pixels.iter().all(|p| p.len() == IMAGE_FLOATS),
+            "Invalid image batch size"
+        );
+        let vectors = self.request(&Request::Image(pixels.iter().flatten().copied().collect()))?;
+        ensure!(
+            vectors.len() == count * 768 && vectors.iter().all(|v| v.is_finite()),
+            "Unexpected SigLIP batch output"
+        );
+        Ok(vectors
+            .as_chunks::<768>()
+            .0
+            .iter()
+            .map(|row| row.to_vec())
+            .collect())
     }
     pub fn text(&mut self, query: &str) -> Result<Vec<f32>> {
         self.request(&Request::Text(query.to_owned()))
@@ -769,6 +851,57 @@ mod tests {
         ] {
             assert!(read_request(malformed.as_slice()).is_err());
         }
+    }
+    #[test]
+    fn image_batches_preserve_frame_boundaries_and_enforce_memory_limits() {
+        let pixels: Vec<_> = (0..GPU_BATCH_SIZE)
+            .flat_map(|i| vec![i as f32; IMAGE_FLOATS])
+            .collect();
+        let mut bytes = vec![];
+        write_request(&mut bytes, &Request::Image(pixels.clone())).unwrap();
+        write_request(&mut bytes, &Request::Text("next request".into())).unwrap();
+        let mut reader = std::io::Cursor::new(bytes);
+        assert!(
+            matches!(read_request(&mut reader).unwrap(), Some(Request::Image(v)) if v == pixels)
+        );
+        assert!(
+            matches!(read_request(&mut reader).unwrap(), Some(Request::Text(s)) if s == "next request")
+        );
+        assert!(read_request(&mut reader).unwrap().is_none());
+        for length in [
+            0,
+            IMAGE_FLOATS - 1,
+            IMAGE_FLOATS + 1,
+            (GPU_BATCH_SIZE + 1) * IMAGE_FLOATS,
+        ] {
+            let mut frame = vec![1];
+            frame.extend((length as u32 * 4).to_le_bytes());
+            // Invalid sizes must be rejected before allocating/reading payloads.
+            assert!(read_request(frame.as_slice()).is_err());
+        }
+    }
+
+    #[test]
+    fn batch_outputs_normalize_each_image_independently() {
+        let mut rows = vec![0.; 3 * 768];
+        rows[0] = 2.;
+        rows[768 + 3] = 5.;
+        rows[2 * 768 + 7] = -10.;
+        let normalized = normalize_images(&rows, 3).unwrap();
+        for (row, expected) in
+            normalized
+                .as_chunks::<768>()
+                .0
+                .iter()
+                .zip([(0, 1.), (3, 1.), (7, -1.)])
+        {
+            assert_eq!(row[expected.0], expected.1);
+            assert_eq!(row.iter().map(|v| v * v).sum::<f32>(), 1.);
+        }
+        assert!(normalize_images(&rows, 2).is_err());
+        assert!(normalize_images(&[], 0).is_err());
+        rows[768] = f32::NAN;
+        assert!(normalize_images(&rows, 3).is_err());
     }
     #[test]
     fn image_layout_and_normalization() {
