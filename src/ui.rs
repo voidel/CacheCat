@@ -25,6 +25,7 @@ use std::{
 mod download;
 mod icons;
 mod previews;
+mod sculpt;
 mod theme;
 use icons::Icon;
 use theme::Palette;

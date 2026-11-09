@@ -4,5 +4,6 @@ pub mod indexing;
 pub mod library;
 pub mod model;
 pub mod preview;
+pub mod sculpt;
 pub mod storage;
 pub mod worker;

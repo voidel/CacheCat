@@ -19,6 +19,7 @@ pub enum Icon {
     ZoomIn,
     Close,
     ExternalLink,
+    Cube,
 }
 
 impl Icon {
@@ -39,6 +40,7 @@ impl Icon {
             Self::ZoomIn => "zoom-in",
             Self::Close => "close",
             Self::ExternalLink => "external-link",
+            Self::Cube => "cube",
         }
     }
 
@@ -68,6 +70,7 @@ impl AssetSource for Assets {
                 .and_then(|p| p.strip_suffix(".svg"))
         });
         let shape = match name {
+            Some("cube") => "<path d='m12 2 9 5v10l-9 5-9-5V7l9-5Zm0 10 9-5M12 12 3 7m9 5v10'/>",
             Some("copy") => {
                 "<rect x='8' y='8' width='13' height='13' rx='2'/><path d='M16 8V3H3v13h5'/>"
             }

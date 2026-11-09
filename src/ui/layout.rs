@@ -91,6 +91,10 @@ impl CacheCat {
                         size(px(right - 32.), px((right - 32.).min(340.))),
                     )),
             )
+            .child(
+                sidebar_button("view-sculpt", "View as sculpt", Icon::Cube, p, right - 32.)
+                    .on_click(cx.listener(|this, _, window, cx| this.show_sculpt(window, cx))),
+            )
             .child(div().text_xs().text_color(rgb(p.muted)).child("ASSET UUID"))
             .child(
                 div()
