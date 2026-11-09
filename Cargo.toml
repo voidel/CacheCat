@@ -16,7 +16,7 @@ directories = "6"
 gpui = "=0.2.2"
 gpui-component = "=0.5.1"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "tga"] }
-jpeg2k = { version = "0.10", default-features = false, features = ["image", "openjpeg-sys"] }
+jpeg2k = { version = "0.10", default-features = false, features = ["image", "openjpeg-sys", "strict-mode"] }
 ort = "=2.0.0-rc.10"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "json"] }
 rusqlite = { version = "0.37", features = ["bundled", "backup"] }

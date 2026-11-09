@@ -52,21 +52,34 @@ impl Cache {
         let mut bytes = vec![0; texture.image_size.min(HEADER_BYTES)];
         file.read_exact(&mut bytes)
             .context("Cache header changed or is incomplete; rescan")?;
-        if texture.body_size > 0 {
+        if texture.image_size > HEADER_BYTES || texture.body_size > 0 {
             let id = texture.id.to_string();
             let path = self.root.join(&id[..1]).join(format!("{id}.texture"));
             // Some older viewers use textures/<hex>/<uuid>.texture.
-            let path = if path.exists() {
-                path
-            } else {
-                self.root
-                    .join("textures")
-                    .join(&id[..1])
-                    .join(format!("{id}.texture"))
+            let body = match File::open(&path) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => File::open(
+                    self.root
+                        .join("textures")
+                        .join(&id[..1])
+                        .join(format!("{id}.texture")),
+                ),
+                result => result,
             };
-            if let Ok(body) = File::open(path) {
-                body.take(texture.body_size as u64)
-                    .read_to_end(&mut bytes)?;
+            match body {
+                Ok(body) => {
+                    // The viewer can grow this UUID's body before flushing its
+                    // entry table. image_size can also be a provisional estimate
+                    // (cached size + 1). Read the bytes actually available.
+                    let remaining = MAX_TEXTURE - bytes.len();
+                    ensure!(
+                        body.metadata()?.len() <= remaining as u64,
+                        "Texture is too large"
+                    );
+                    body.take(remaining as u64 + 1).read_to_end(&mut bytes)?;
+                }
+                // A header alone can still contain a usable progressive image.
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error).context("Cannot read cached texture body"),
             }
         }
         ensure!(bytes.len() <= MAX_TEXTURE, "Texture is too large");
@@ -160,10 +173,57 @@ pub fn dimensions(bytes: &[u8]) -> Result<(u32, u32)> {
 
 pub fn decode(bytes: &[u8]) -> Result<DynamicImage> {
     dimensions(bytes)?;
+    // This option is effective only with jpeg2k's `strict-mode` Cargo feature.
+    // Viewer caches routinely contain progressive, partially downloaded images.
     let decoded =
-        jpeg2k::Image::from_bytes(bytes).context("Incomplete or unsupported JPEG 2000 texture")?;
-    let image: DynamicImage = (&decoded).try_into()?;
-    Ok(image)
+        jpeg2k::Image::from_bytes_with(bytes, jpeg2k::DecodeParameters::new().strict(false))
+            .with_context(|| {
+                format!(
+                    "Incomplete or unsupported JPEG 2000 texture ({} cached bytes)",
+                    bytes.len()
+                )
+            })?;
+    let components = decoded.components();
+    if components.len() == 5 {
+        // SL baked textures can carry an auxiliary fifth channel. The viewer
+        // displays channels 0..4 and decodes the auxiliary channel separately:
+        // secondlife/viewer, indra/llimage/llimagej2c.cpp + llimageworker.cpp.
+        let [r, g, b, a] = &components[..4] else {
+            unreachable!()
+        };
+        let (width, height) = (r.width(), r.height());
+        ensure!(
+            components[..4].iter().all(|c| c.width() == width
+                && c.height() == height
+                && (1..=16).contains(&c.precision())),
+            "Unsupported baked texture channel dimensions or precision"
+        );
+        if components[..4].iter().all(|c| c.precision() <= 8) {
+            let pixels = r
+                .data_u8()
+                .zip(g.data_u8())
+                .zip(b.data_u8())
+                .zip(a.data_u8())
+                .flat_map(|(((r, g), b), a)| [r, g, b, a])
+                .collect();
+            let image = image::RgbaImage::from_raw(width, height, pixels)
+                .context("Incomplete baked texture channels")?;
+            Ok(DynamicImage::ImageRgba8(image))
+        } else {
+            let pixels = r
+                .data_u16()
+                .zip(g.data_u16())
+                .zip(b.data_u16())
+                .zip(a.data_u16())
+                .flat_map(|(((r, g), b), a)| [r, g, b, a])
+                .collect();
+            let image = image::ImageBuffer::from_raw(width, height, pixels)
+                .context("Incomplete baked texture channels")?;
+            Ok(DynamicImage::ImageRgba16(image))
+        }
+    } else {
+        Ok((&decoded).try_into()?)
+    }
 }
 
 pub fn default_path() -> Option<PathBuf> {
@@ -249,5 +309,104 @@ mod tests {
         let bytes = c.read(&c.textures[0]).unwrap();
         assert_eq!(&bytes[..600], &vec![42; 600]);
         assert_eq!(&bytes[600..], &vec![7; 100]);
+    }
+
+    #[test]
+    fn reads_a_grown_body_even_when_entry_sizes_are_stale() {
+        for declared_body in [0, 20] {
+            let dir = tempfile::tempdir().unwrap();
+            let entries = fixture(1.71, &[(1, 601 + declared_body, declared_body, 1)]);
+            std::fs::write(dir.path().join("texture.entries"), &entries).unwrap();
+            std::fs::write(dir.path().join("texture.cache"), vec![42; 600]).unwrap();
+            std::fs::create_dir(dir.path().join("0")).unwrap();
+            let path = dir.path().join(format!("0/{}.texture", Uuid::from_u128(1)));
+            std::fs::write(&path, vec![7; 100]).unwrap();
+            let cache = Cache::open(dir.path()).unwrap();
+            let bytes = cache.read(&cache.textures[0]).unwrap();
+            assert_eq!(bytes.len(), 700);
+            assert_eq!(&bytes[600..], &[7; 100]);
+            assert_eq!(std::fs::read(path).unwrap(), vec![7; 100]);
+            assert_eq!(
+                std::fs::read(dir.path().join("texture.entries")).unwrap(),
+                entries
+            );
+        }
+    }
+
+    #[test]
+    fn partial_and_legacy_bodies_stay_readable_with_a_hard_size_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("texture.entries"),
+            fixture(1.7, &[(1, 800, 200, 1)]),
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("texture.cache"), vec![42; 600]).unwrap();
+        let cache = Cache::open(dir.path()).unwrap();
+        assert_eq!(cache.read(&cache.textures[0]).unwrap().len(), 600);
+        let folder = dir.path().join("textures/0");
+        std::fs::create_dir_all(&folder).unwrap();
+        let path = folder.join(format!("{}.texture", Uuid::from_u128(1)));
+        std::fs::write(&path, vec![7; 50]).unwrap();
+        assert_eq!(cache.read(&cache.textures[0]).unwrap().len(), 650);
+        File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_len(MAX_TEXTURE as u64)
+            .unwrap();
+        assert!(
+            cache
+                .read(&cache.textures[0])
+                .unwrap_err()
+                .to_string()
+                .contains("too large")
+        );
+    }
+
+    #[test]
+    fn decodes_progressive_cache_data_without_changing_complete_images() {
+        let cache = Cache::open(Path::new("tests/fixtures/texturecache")).unwrap();
+        let bytes = cache.read(&cache.textures[0]).unwrap();
+        let strict =
+            jpeg2k::Image::from_bytes_with(&bytes, jpeg2k::DecodeParameters::new().strict(true))
+                .unwrap();
+        let expected: DynamicImage = (&strict).try_into().unwrap();
+        assert_eq!(decode(&bytes).unwrap().into_rgba8(), expected.into_rgba8());
+        for length in [bytes.len() - 2, bytes.len() / 2] {
+            let partial = &bytes[..length];
+            assert!(
+                jpeg2k::Image::from_bytes_with(
+                    partial,
+                    jpeg2k::DecodeParameters::new().strict(true)
+                )
+                .is_err()
+            );
+            let image = decode(partial).unwrap();
+            assert_eq!((image.width(), image.height()), (128, 128));
+        }
+        assert!(decode(&bytes[..42]).is_err());
+    }
+
+    #[test]
+    fn baked_texture_auxiliary_channel_is_not_used_as_colour_or_alpha() {
+        // Synthetic lossless 32x32 OpenJPEG fixture, not a viewer-cache asset.
+        // Channels are R=x*8, G=y*8, B=(x+y)*4, A=x*8, auxiliary=255-y*8.
+        let bytes = include_bytes!("../tests/fixtures/baked-five-channel.j2c");
+        let raw = jpeg2k::Image::from_bytes(bytes).unwrap();
+        assert_eq!(raw.num_components(), 5);
+        let image = decode(bytes).unwrap().into_rgba8();
+        assert_eq!(image.dimensions(), (32, 32));
+        for (x, y, pixel) in image.enumerate_pixels() {
+            assert_eq!(
+                pixel.0,
+                [
+                    (x * 8) as u8,
+                    (y * 8) as u8,
+                    ((x + y) * 4) as u8,
+                    (x * 8) as u8
+                ]
+            );
+        }
     }
 }
