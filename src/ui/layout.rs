@@ -337,7 +337,7 @@ impl Render for CacheCat {
                                             .size(px(14.)),
                                     ),
                             )
-                            .tooltip("Choose the devices used for indexing")
+                            .tooltip("Choose the device used for indexing")
                             .dropdown_menu({
                                 let view = cx.entity().downgrade();
                                 move |mut menu, _, cx| {
@@ -808,7 +808,7 @@ mod tests {
         assert!(settings.appearance == Appearance::Dark);
         assert_eq!(settings.sidebar_width, 232.);
         assert_eq!(settings.details_width, 320.);
-        assert_eq!(settings.indexing_mode, IndexingMode::GpuCpu);
+        assert_eq!(settings.indexing_mode, IndexingMode::Gpu);
         assert_eq!(settings.tile_size, TILE_DEFAULT);
         assert!(!settings.show_partial);
         let settings: Settings = serde_json::from_str(r#"{"show_partial":false}"#).unwrap();

@@ -10,7 +10,7 @@ Textures and searches stay on your device.
 - Browse cached textures and filter by UUID.
 - Find objects, scenes, colours, shapes, patterns, materials and text within images using local SigLIP search.
 - Search while indexing continues, with progress and partial results shown.
-- Choose GPU+CPU, GPU or CPU indexing, depending on available acceleration.
+- Choose GPU or CPU indexing, depending on available acceleration.
 - Sort textures, copy UUIDs, and export PNG or TGA.
 - Preview sculpt maps in 3D with a neutral matcap, automatic rotation and mouse controls.
 - Light and dark themes, with system preference support.

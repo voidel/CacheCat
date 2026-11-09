@@ -524,7 +524,7 @@ mod tests {
     #[test]
     fn cpu_only_worker_rejects_unavailable_device_selection() {
         let data = tempfile::tempdir().unwrap();
-        let worker = Worker::start(data.path().to_owned(), true, IndexingMode::GpuCpu, None);
+        let worker = Worker::start(data.path().to_owned(), true, IndexingMode::Gpu, None);
         assert!(matches!(
             worker.events.recv_timeout(Duration::from_secs(5)).unwrap(),
             Event::IndexingMode(IndexingMode::Cpu, false)
