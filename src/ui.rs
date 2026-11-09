@@ -3,12 +3,13 @@ use cachecat::library::{ExportFormat, SortOrder};
 use cachecat::worker::{Command, Event, Item, SearchMode, Worker};
 use gpui::{prelude::*, *};
 use gpui_component::{
-    Disableable, IconName, Root, Theme, ThemeMode, WindowExt,
+    Disableable, IconName, Root, Sizable, Theme, ThemeMode, WindowExt,
     button::{Button, ButtonVariants},
     input::{Input, InputEvent, InputState},
     menu::{DropdownMenu, PopupMenuItem},
     select::{Select, SelectEvent, SelectState},
     slider::{Slider, SliderEvent, SliderState},
+    spinner::Spinner,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -605,7 +606,10 @@ impl CacheCat {
                             .size(px(28.))
                             .into_any_element()
                     } else {
-                        div().child("Loading…").into_any_element()
+                        Spinner::new()
+                            .with_size(px(24.))
+                            .color(rgb(p.muted).into())
+                            .into_any_element()
                     },
                 )
                 .into_any_element()
